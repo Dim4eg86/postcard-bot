@@ -661,18 +661,20 @@ async def generate_postcard(photo_path, theme, style, scene, orientation="vertic
         
         logger.info(f"[STEP 3/4] ✓ Post-processing complete")
         
-        # ШАГ 4: Загружаем на Telegraph
-        logger.info("[STEP 4/4] Uploading to Telegraph...")
-        telegraph_url = await upload_to_telegraph(final_path)
+        # ШАГ 4: Конвертируем в JPEG для отправки
+        logger.info("[STEP 4/4] Converting to JPEG...")
         
-        if not telegraph_url:
-            logger.error("Telegraph upload failed")
-            return None
+        # Конвертируем в RGB и сохраняем как JPEG
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
         
-        logger.info(f"[STEP 4/4] ✓ Upload complete")
-        logger.info(f"[PIPELINE] ✓ SUCCESS! URL: {telegraph_url}")
+        jpeg_path = f"/tmp/result_{uuid.uuid4().hex}.jpg"
+        img.save(jpeg_path, "JPEG", quality=95, optimize=True)
         
-        # Очистка временных файлов
+        logger.info(f"[STEP 4/4] ✓ Conversion complete")
+        logger.info(f"[PIPELINE] ✓ SUCCESS! File: {jpeg_path}")
+        
+        # Очистка временных файлов (кроме финального результата)
         try:
             os.remove(template_path)
             if swapped_path != template_path:
@@ -681,7 +683,7 @@ async def generate_postcard(photo_path, theme, style, scene, orientation="vertic
         except:
             pass
         
-        return telegraph_url
+        return jpeg_path
         
     except Exception as e:
         logger.error(f"[PIPELINE] Error: {e}")
@@ -1084,7 +1086,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await photo_file.download_to_drive(photo_path)
         
         # Генерируем открытку
-        result_url = await generate_postcard(
+        result_path = await generate_postcard(
             photo_path=photo_path,
             theme=context.user_data['theme'],
             style=context.user_data['style'],
@@ -1098,8 +1100,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        if result_url:
-            # Сохраняем в БД
+        if result_path:
+            # Сохраняем в БД (без URL, так как файл локальный)
             conn = get_db_connection()
             cur = conn.cursor()
             cur.execute("""
@@ -1112,7 +1114,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data['scene'],
                 context.user_data['orientation'],
                 'completed',
-                result_url
+                'local_file'  # Помечаем как локальный файл
             ))
             conn.commit()
             cur.close()
@@ -1121,7 +1123,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Удаляем статусное сообщение
             await status_msg.delete()
             
-            # Отправляем результат
+            # Отправляем результат как файл
             credits = get_user_credits(user_id)
             
             keyboard = [
@@ -1129,11 +1131,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("◀️ В меню", callback_data="back_to_start")]
             ]
             
-            await update.message.reply_photo(
-                photo=result_url,
-                caption=f"✨ Твоя открытка готова!\n\n💰 Осталось открыток: {credits}",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            with open(result_path, 'rb') as photo_file:
+                await update.message.reply_photo(
+                    photo=photo_file,
+                    caption=f"✨ Твоя открытка готова!\n\n💰 Осталось открыток: {credits}",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            
+            # Удаляем файл после отправки
+            try:
+                os.remove(result_path)
+            except:
+                pass
             
             # Очищаем данные пользователя
             context.user_data.clear()
