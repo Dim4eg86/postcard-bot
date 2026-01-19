@@ -233,18 +233,18 @@ def get_mvp_prompt(theme, style, scene, orientation):
         "rus": "An ancient Rus historical postcard depicting medieval Russia. Rich historical detail, traditional Slavic patterns, epic landscape, orthodox iconography influences, warm earth tones."
     }
     
-    # Описания сцен
+    # Описания сцен - с акцентом на ЛЮДЕЙ с четкими лицами
     scene_descriptions = {
-        "night_street": "A quiet snow-covered street at night. Warm golden light glowing from windows of wooden houses, street lamps casting soft pools of light on fresh snow, bare trees with snow-laden branches, peaceful winter evening atmosphere.",
-        "snowy_estate": "A grand Russian estate covered in pristine snow. Elegant manor house with classical architecture, snow-covered garden with ornate gates, frozen fountains, winter trees creating dramatic silhouettes.",
-        "church_road": "A winding path leading to an old Orthodox church. Golden onion domes gleaming in winter light, snow-covered pine trees lining the path, pilgrims in traditional winter clothing, spiritual and serene atmosphere.",
-        "snowy_palace": "A cozy courtyard of a Russian palace in winter. Decorative architecture with carved wooden details, snow covering every surface, icicles hanging from ornate eaves, warm inviting atmosphere despite the cold.",
-        "pine_forest": "A majestic pine forest in deep winter. Tall snow-covered pines creating natural corridors, soft diffused light filtering through branches, untouched snow creating magical pristine scenery.",
-        "winter_fair": "A bustling traditional Russian winter fair. Colorful decorated stalls with striped awnings, people in folk costumes, steaming samovars, wooden carousel, festive joyful atmosphere with snow gently falling.",
-        "forest_path": "A narrow path winding through a winter forest. Snow-laden trees creating a natural tunnel, animal tracks visible in snow, wooden fence posts marking the way, mystical peaceful mood.",
-        "epic_winter": "An epic panoramic winter landscape. Vast snow-covered fields extending to horizon, dramatic sky with winter colors, distant forests and villages, sense of Russia's vast beauty and scale.",
-        "winter_field": "An open winter field under an expansive sky. Gentle rolling hills covered in smooth snow, distant tree line, soft winter light creating long shadows, sense of peaceful solitude and space.",
-        "ice_river": "A partially frozen river in winter. Ice formations creating artistic patterns, snow-covered banks, bare willow trees, mist rising from open water, dramatic interplay of ice and water."
+        "night_street": "A person in traditional Russian winter coat standing on a snow-covered street at night, face clearly visible and well-lit by warm street lamp, looking at camera with warm smile. Behind: wooden houses with glowing windows, bare trees with snow.",
+        "snowy_estate": "A person in elegant winter coat standing in front of a grand Russian estate, face clearly visible, smiling warmly at camera. Behind: classical manor house covered in pristine snow, ornate gates, winter garden.",
+        "church_road": "A person in traditional Russian winter clothing standing on a path to Orthodox church, face clearly visible and well-lit, warm expression. Behind: church with golden onion domes, snow-covered pine trees.",
+        "snowy_palace": "A person in fur-trimmed winter coat in a palace courtyard, face clearly visible, gentle smile. Behind: ornate Russian palace architecture with carved wooden details, snow-covered courtyard.",
+        "pine_forest": "A person in warm winter clothing standing in snowy pine forest, face clearly visible and well-lit, joyful expression. Behind: tall snow-covered pines, soft winter light filtering through branches.",
+        "winter_fair": "A person in traditional Russian folk costume at a winter fair, face clearly visible, happy smile. Behind: colorful decorated fair stalls, people celebrating, festive decorations.",
+        "forest_path": "A person in winter coat on a forest path, face clearly visible in natural light, warm smile. Behind: snow-laden trees, winding path, winter forest.",
+        "epic_winter": "A person in elegant winter outfit standing in vast winter landscape, face clearly visible, serene expression. Behind: snow-covered fields extending to horizon, dramatic winter sky.",
+        "winter_field": "A person in warm coat in open winter field, face clearly visible and well-lit, peaceful smile. Behind: rolling snowy hills, distant tree line, winter sky.",
+        "ice_river": "A person in traditional winter clothing by a frozen river, face clearly visible, contemplative expression. Behind: ice formations, snow-covered banks, winter river scene."
     }
     
     # Описания тематик
@@ -269,11 +269,13 @@ Scene: {scene_desc}
 
 Theme: {theme_desc}
 
-Composition: {composition}, people in traditional winter clothing with warm expressions, holiday atmosphere.
+Composition: {composition}.
+
+CRITICAL: The person's FACE must be clearly visible, well-lit, and facing the camera. Face should occupy at least 20% of the image. Clear facial features are essential.
 
 Style requirements: painted illustration (NOT photorealistic), vintage postcard aesthetic, warm nostalgic atmosphere, ornate decorative border, aged vintage look.
 
-IMPORTANT: Hand-painted illustration style, artistic and painterly, NOT a photograph."""
+IMPORTANT: Hand-painted illustration style, artistic and painterly, NOT a photograph. But the person's face must be clear and distinct for portrait recognition."""
 
     return prompt
 
