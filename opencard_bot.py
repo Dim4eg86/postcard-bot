@@ -560,26 +560,33 @@ async def upload_to_telegraph(image_path):
         # Конвертируем в JPEG
         img = Image.open(image_path)
         
-        # Если есть альфа-канал, конвертируем в RGB
-        if img.mode in ('RGBA', 'LA', 'P'):
+        # Конвертируем в RGB
+        if img.mode != 'RGB':
             # Создаём белый фон
-            background = Image.new('RGB', img.size, (255, 255, 255))
-            if img.mode == 'P':
-                img = img.convert('RGBA')
-            background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
-            img = background
+            if img.mode in ('RGBA', 'LA'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1])
+                img = background
+            else:
+                img = img.convert('RGB')
         
         # Сохраняем как JPEG
         jpeg_path = image_path.replace('.png', '.jpg')
-        img.save(jpeg_path, 'JPEG', quality=95)
+        img.save(jpeg_path, 'JPEG', quality=95, optimize=True)
+        
+        logger.info(f"[Telegraph] Converted to JPEG: {jpeg_path}")
         
         # Загружаем на Telegraph
         with open(jpeg_path, 'rb') as f:
             files = {'file': ('image.jpg', f, 'image/jpeg')}
             response = requests.post(f"{TELEGRAPH_API}/upload", files=files, timeout=30)
         
+        logger.info(f"[Telegraph] Upload response: {response.status_code}")
+        
         if response.status_code == 200:
             result = response.json()
+            logger.info(f"[Telegraph] Response data: {result}")
+            
             if result and len(result) > 0:
                 image_url = f"{TELEGRAPH_API}{result[0]['src']}"
                 logger.info(f"[Telegraph] Upload success: {image_url}")
@@ -1131,15 +1138,26 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Очищаем данные пользователя
             context.user_data.clear()
         else:
+            # Возвращаем кредит если генерация не удалась
+            add_credits(user_id, 1)
+            credits = get_user_credits(user_id)
+            
             await status_msg.edit_text(
                 "❌ Не удалось создать открытку\n\n"
+                f"💰 Открытка возвращена на баланс: {credits} открыток\n\n"
                 "Попробуй ещё раз или обратись в поддержку"
             )
             
     except Exception as e:
         logger.error(f"Ошибка создания открытки: {e}")
+        
+        # Возвращаем кредит при ошибке
+        add_credits(user_id, 1)
+        credits = get_user_credits(user_id)
+        
         await status_msg.edit_text(
             "❌ Произошла ошибка при создании открытки\n\n"
+            f"💰 Открытка возвращена на баланс: {credits} открыток\n\n"
             "Попробуй ещё раз или обратись в поддержку"
         )
 
@@ -1448,6 +1466,7 @@ def main():
     app.add_handler(CommandHandler("check_payments", check_payment_manual))
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("add_credits", admin_add_credits))
+    app.add_handler(CommandHandler("addbalance", admin_add_credits))  # Alias
     
     logger.info("🚀 Бот запущен с Leonardo + RunPod Face Swap!")
     
