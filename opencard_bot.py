@@ -57,9 +57,9 @@ async def generate_leonardo(theme, style, scene, count, gender, orientation):
     
     current_style = style_configs.get(style, style_configs["vintage"])
     prompt = (
-        f"Beautiful {current_style}. {subj} standing in {scene}, full body portrait, looking at camera. "
+        f"A beautiful {current_style}. {subj} standing in {scene}, full body portrait, looking at camera. "
         f"Theme: {THEMES.get(theme, theme)}. Snowing atmosphere, centered composition, "
-        f"clear detailed faces, masterpiece, 8k resolution, nostalgic mood."
+        f"highly detailed faces, masterpiece, 8k resolution, nostalgic mood."
     )
     
     headers = {"Authorization": f"Bearer {LEONARDO_API_KEY}", "Content-Type": "application/json", "accept": "application/json"}
@@ -69,7 +69,7 @@ async def generate_leonardo(theme, style, scene, count, gender, orientation):
         "height": 1024 if orientation == "vertical" else 768,
         "num_images": 1,
         "alchemy": True,
-        # Заменено на стабильную модель Vision XL
+        # ИСПОЛЬЗУЕМ УНИВЕРСАЛЬНУЮ МОДЕЛЬ VISION XL
         "modelId": "5c232a9e-9061-4777-9858-dd1717466c77", 
         "presetStyle": "VINTAGE" if style == "vintage" else "ILLUSTRATION"
     }
@@ -138,7 +138,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res = cur.fetchone()
             c = res['credits'] if res else 0
     kb = [[InlineKeyboardButton("🎨 Создать открытку", callback_data="go_create")], [InlineKeyboardButton("💰 Пополнить баланс", callback_data="go_pay")]]
-    await update.message.reply_text(f"Привет! Баланс: {c} 🎫\nСделаем винтажную открытку?", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(f"Привет! Баланс: {c} 🎫\nСоздадим винтажную открытку?", reply_markup=InlineKeyboardMarkup(kb))
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
