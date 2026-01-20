@@ -53,7 +53,6 @@ async def generate_leonardo(theme, style, scene, count, gender, orientation):
     
     headers = {"Authorization": f"Bearer {LEONARDO_API_KEY}", "Content-Type": "application/json", "accept": "application/json"}
     
-    # Без modelId для обхода ошибки 400
     payload = {
         "prompt": prompt,
         "width": 768 if orientation == "vertical" else 1024,
@@ -72,7 +71,8 @@ async def generate_leonardo(theme, style, scene, count, gender, orientation):
         gen_id = r.json().get("sdGenerationJob", {}).get("generationId")
         for _ in range(40):
             await asyncio.sleep(5)
-            status = requests.get(f"https://cloud.leonardo.ai/api/rest/v1/generations/{gen_id}", headers=headers).json()
+            status_req = requests.get(f"https://cloud.leonardo.ai/api/rest/v1/generations/{gen_id}", headers=headers)
+            status = status_req.json()
             data = status.get("generations_by_pk") or (status.get("generations")[0] if status.get("generations") else None)
             if data and data.get("status") == "COMPLETE":
                 return data.get("generated_images")[0].get("url")
@@ -81,7 +81,7 @@ async def generate_leonardo(theme, style, scene, count, gender, orientation):
     return None
 
 async def swap_face(t_url, u_b64):
-    """Оптимизированный Face Swap для RunPod Serverless (0 workers)"""
+    """Универсальная версия для любого вывода RunPod"""
     try:
         t_resp = requests.get(t_url)
         t_b64 = base64.b64encode(t_resp.content).decode('utf-8')
@@ -92,32 +92,46 @@ async def swap_face(t_url, u_b64):
         job_id = run_res.get("id")
         
         if not job_id:
-            logger.error(f"RunPod error: {run_res}")
+            logger.error(f"RunPod didn't return Job ID: {run_res}")
             return None
 
-        logger.info(f"RunPod Job {job_id} started. Waiting for server to wake up...")
+        logger.info(f"RunPod Job {job_id} started. Monitoring...")
         
-        # Ждем до 450 секунд (150 итераций по 3 сек)
         for i in range(150):
             await asyncio.sleep(3)
             res = requests.get(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status/{job_id}", headers=headers).json()
             status = res.get("status")
             
             if status == "COMPLETED":
-                logger.info("RunPod completed successfully.")
+                logger.info("RunPod status: COMPLETED. Extracting image...")
                 out = res.get("output")
-                img_data = out if isinstance(out, str) else out.get("image")
-                return base64.b64decode(img_data)
+                
+                if out is None:
+                    logger.error(f"RunPod output is empty: {res}")
+                    return None
+                
+                # Обработка разных форматов вывода (строка или словарь)
+                img_data = None
+                if isinstance(out, str):
+                    img_data = out
+                elif isinstance(out, dict):
+                    img_data = out.get("image") or out.get("result") or out.get("output")
+                
+                if img_data:
+                    return base64.b64decode(img_data)
+                else:
+                    logger.error(f"Could not find image data in output: {out}")
+                    return None
             
             if status == "FAILED":
                 logger.error(f"RunPod job {job_id} failed: {res}")
                 return None
             
             if i % 10 == 0:
-                logger.info(f"Job {job_id} status: {status}...")
+                logger.info(f"Job {job_id} is {status}...")
                 
     except Exception as e:
-        logger.error(f"Swap error: {e}")
+        logger.error(f"Swap error details: {e}")
     return None
 
 # --- ТЕЛЕГРАМ ОБРАБОТЧИКИ ---
@@ -137,24 +151,24 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     d = q.data
     if d == "go_create":
-        kb = [[InlineKeyboardButton("📱 Вертикальная", callback_data="o_v"), InlineKeyboardButton("🖼 Горизонтальная", callback_data="o_h")]]
-        await q.edit_message_text("Формат открытки:", reply_markup=InlineKeyboardMarkup(kb))
+        kb = [[InlineKeyboardButton("📱 Портрет", callback_data="o_v"), InlineKeyboardButton("🖼 Альбом", callback_data="o_h")]]
+        await q.edit_message_text("Формат:", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("o_"):
         context.user_data['orient'] = "vertical" if d == "o_v" else "horizontal"
         kb = [[InlineKeyboardButton(v, callback_data=f"t_{k}")] for k, v in THEMES.items()]
-        await q.edit_message_text("Выберите праздник:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Праздник:", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("t_"):
         context.user_data['theme'] = d[2:]
-        kb = [[InlineKeyboardButton("👤 Один", callback_data="c_s"), InlineKeyboardButton("👨‍👩‍👧 Группа", callback_data="c_g")]]
-        await q.edit_message_text("Количество людей:", reply_markup=InlineKeyboardMarkup(kb))
+        kb = [[InlineKeyboardButton("👤 Один", callback_data="c_s"), InlineKeyboardButton("👨‍👩‍👧 Пара", callback_data="c_g")]]
+        await q.edit_message_text("Людей:", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("c_"):
         context.user_data['count'] = "single" if d == "c_s" else "couple"
         kb = [[InlineKeyboardButton(v, callback_data=f"s_{k}")] for k, v in STYLES.items()]
-        await q.edit_message_text("Выберите стиль:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Стиль:", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("s_"):
         context.user_data['style'] = d[2:]
         kb = [[InlineKeyboardButton(v, callback_data=f"sc_{k}")] for k, v in SCENES.items()]
-        await q.edit_message_text("Место действия:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Место:", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("sc_"):
         context.user_data['scene'] = d[3:]
         if context.user_data['count'] == "single":
@@ -162,71 +176,9 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("Кто на фото?", reply_markup=InlineKeyboardMarkup(kb))
         else:
             context.user_data['gender'] = "mixed"
-            await q.edit_message_text("📸 Теперь пришлите ваше фото.")
+            await q.edit_message_text("📸 Пришлите ваше фото.")
     elif d.startswith("g_"):
         context.user_data['gender'] = "man" if d == "g_m" else "woman"
-        await q.edit_message_text("📸 Теперь пришлите ваше фото.")
+        await q.edit_message_text("📸 Пришлите ваше фото.")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if 'theme' not in context.user_data: return
-    
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT credits FROM users WHERE user_id = %s", (uid,))
-            res = cur.fetchone()
-            if (not res or res['credits'] <= 0) and uid != ADMIN_ID:
-                await update.message.reply_text("❌ Нет кредитов!"); return
-            if uid != ADMIN_ID: cur.execute("UPDATE users SET credits = credits - 1 WHERE user_id = %s", (uid,))
-            conn.commit()
-
-    m = await update.message.reply_text("⏳ Магия началась! Генерирую (около 3-х минут)...")
-    try:
-        file = await update.message.photo[-1].get_file()
-        u_b64 = base64.b64encode(await file.download_as_bytearray()).decode('utf-8')
-        
-        url = await generate_leonardo(context.user_data['theme'], context.user_data['style'], context.user_data['scene'], context.user_data['count'], context.user_data['gender'], context.user_data['orient'])
-        if not url:
-            await m.edit_text("❌ Ошибка генерации фона. Кредит вернули.")
-            with get_db_connection() as conn:
-                with conn.cursor() as cur: cur.execute("UPDATE users SET credits = credits + 1 WHERE user_id = %s", (uid,))
-                conn.commit()
-            return
-            
-        await m.edit_text("🔄 Фон готов! Вклеиваю лицо (RunPod просыпается)...")
-        res_img = await swap_face(url, u_b64)
-        if not res_img:
-            await m.edit_text("❌ Ошибка Face Swap. Кредит вернули.")
-            with get_db_connection() as conn:
-                with conn.cursor() as cur: cur.execute("UPDATE users SET credits = credits + 1 WHERE user_id = %s", (uid,))
-                conn.commit()
-            return
-            
-        await update.message.reply_photo(res_img, caption="Ваша открытка готова! ✨")
-        await m.delete()
-        context.user_data.clear()
-    except Exception as e:
-        logger.error(f"Global error: {e}")
-
-async def go_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [[InlineKeyboardButton(f"{v['name']} - {v['price']}₽", callback_data=f"buy_{k}")] for k, v in PACKAGES.items()]
-    await update.callback_query.edit_message_text("Выберите пакет кредитов:", reply_markup=InlineKeyboardMarkup(kb))
-
-async def buy_pkg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pk = PACKAGES[update.callback_query.data.replace("buy_", "")]
-    pay = Payment.create({"amount": {"value": str(pk['price']), "currency": "RUB"}, "confirmation": {"type": "redirect", "return_url": "https://t.me/your_bot_name"}, "metadata": {"u": update.effective_user.id, "c": pk['cnt']}}, uuid.uuid4())
-    kb = [[InlineKeyboardButton("💳 Оплатить", url=pay.confirmation.confirmation_url)]]
-    await update.callback_query.edit_message_text(f"Счет на {pk['price']}₽ создан.", reply_markup=InlineKeyboardMarkup(kb))
-
-def main():
-    init_db()
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(go_pay, pattern="^go_pay$"))
-    app.add_handler(CallbackQueryHandler(buy_pkg, pattern="^buy_"))
-    app.add_handler(CallbackQueryHandler(handle_menu, pattern="^(go_create|o_|t_|c_|s_|sc_|g_)"))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
