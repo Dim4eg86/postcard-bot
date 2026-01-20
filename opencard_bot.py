@@ -47,18 +47,15 @@ def init_db():
 
 # --- ЛОГИКА НЕЙРОСЕТЕЙ ---
 async def generate_leonardo(theme, style, scene, count, gender, orientation):
-    # Промпты адаптированы под визуальный референс пользователя
     subj = "Family with a child" if count == "couple" else ("Man" if gender == "man" else "Woman")
     
     style_configs = {
         "ussr": "Soviet 1950s holiday postcard style, gouache painting, vintage aesthetic",
         "vintage": "19th century vintage postcard, grainy paper texture, nostalgic oil painting, warm colors",
-        "modern": "High-quality digital 3D render, cinematic lighting, sharp focus, clear facial features"
+        "modern": "High-quality digital art, cinematic lighting, sharp focus, clear facial features"
     }
     
     current_style = style_configs.get(style, style_configs["vintage"])
-
-    # Ключевая добавка: "Full body portrait, looking at camera, sharp faces"
     prompt = (
         f"Beautiful {current_style}. {subj} standing in {scene}, full body portrait, looking at camera. "
         f"Theme: {THEMES.get(theme, theme)}. Snowing atmosphere, centered composition, "
@@ -78,16 +75,28 @@ async def generate_leonardo(theme, style, scene, count, gender, orientation):
     
     try:
         r = requests.post("https://cloud.leonardo.ai/api/rest/v1/generations", json=payload, headers=headers)
-        if r.status_code != 200: return None
+        if r.status_code != 200:
+            logger.error(f"Leonardo Start Error: {r.text}")
+            return None
+            
         gen_id = r.json().get("sdGenerationJob", {}).get("generationId")
-        for _ in range(45):
+        
+        # Ждем до 5 минут (60 итераций по 5 сек)
+        for _ in range(60):
             await asyncio.sleep(5)
-            status_req = requests.get(f"https://cloud.leonardo.ai/api/rest/v1/generations/{gen_id}", headers=headers)
-            status = status_req.json()
-            data = status.get("generations_by_pk") or (status.get("generations")[0] if status.get("generations") else None)
-            if data and data.get("status") == "COMPLETE":
-                return data.get("generated_images")[0].get("url")
-    except: return None
+            try:
+                status_req = requests.get(f"https://cloud.leonardo.ai/api/rest/v1/generations/{gen_id}", headers=headers)
+                if status_req.status_code != 200: continue
+                
+                data = status_req.json()
+                job = data.get("generations_by_pk") or (data.get("generations")[0] if data.get("generations") else None)
+                
+                if job and job.get("status") == "COMPLETE":
+                    return job.get("generated_images")[0].get("url")
+                if job and job.get("status") == "FAILED": return None
+            except: continue
+    except Exception as e:
+        logger.error(f"Leonardo Global Error: {e}")
     return None
 
 async def swap_face(t_url, u_b64):
@@ -101,7 +110,7 @@ async def swap_face(t_url, u_b64):
         job_id = run_res.get("id")
         if not job_id: return None
 
-        for i in range(150):
+        for i in range(100):
             await asyncio.sleep(3)
             res = requests.get(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status/{job_id}", headers=headers).json()
             status = res.get("status")
@@ -114,8 +123,7 @@ async def swap_face(t_url, u_b64):
             
             if status == "FAILED":
                 err_msg = str(res.get("error", "")) + str(res.get("output", ""))
-                if "does not contain any faces" in err_msg:
-                    return "FACE_NOT_FOUND"
+                if "does not contain any faces" in err_msg: return "FACE_NOT_FOUND"
                 return None
     except: return None
     return None
@@ -130,18 +138,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res = cur.fetchone()
             c = res['credits'] if res else 0
     kb = [[InlineKeyboardButton("🎨 Создать открытку", callback_data="go_create")], [InlineKeyboardButton("💰 Пополнить баланс", callback_data="go_pay")]]
-    await update.message.reply_text(f"Привет! Баланс: {c} 🎫\nСоздадим уникальную винтажную открытку?", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(f"Привет! Ваш баланс: {c} 🎫\nСоздадим шедевр?", reply_markup=InlineKeyboardMarkup(kb))
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     d = q.data
     if d == "go_create":
         kb = [[InlineKeyboardButton("📱 Портрет", callback_data="o_v"), InlineKeyboardButton("🖼 Альбом", callback_data="o_h")]]
-        await q.edit_message_text("Формат открытки:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Выберите формат:", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("o_"):
         context.user_data['orient'] = "vertical" if d == "o_v" else "horizontal"
         kb = [[InlineKeyboardButton(v, callback_data=f"t_{k}")] for k, v in THEMES.items()]
-        await q.edit_message_text("Тематика:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Выберите праздник:", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("t_"):
         context.user_data['theme'] = d[2:]
         kb = [[InlineKeyboardButton("👤 Один человек", callback_data="c_s"), InlineKeyboardButton("👨‍👩‍ Семья/Пара", callback_data="c_g")]]
@@ -149,7 +157,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("c_"):
         context.user_data['count'] = "single" if d == "c_s" else "couple"
         kb = [[InlineKeyboardButton(v, callback_data=f"s_{k}")] for k, v in STYLES.items()]
-        await q.edit_message_text("Стиль исполнения:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Выберите стиль:", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("s_"):
         context.user_data['style'] = d[2:]
         kb = [[InlineKeyboardButton(v, callback_data=f"sc_{k}")] for k, v in SCENES.items()]
@@ -161,10 +169,10 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("Ваш пол:", reply_markup=InlineKeyboardMarkup(kb))
         else:
             context.user_data['gender'] = "mixed"
-            await q.edit_message_text("📸 Жду ваше селфи! Лицо должно быть четко видно.")
+            await q.edit_message_text("📸 Пришлите ваше фото (лицо должно быть четко видно).")
     elif d.startswith("g_"):
         context.user_data['gender'] = "man" if d == "g_m" else "woman"
-        await q.edit_message_text("📸 Жду ваше селфи! Лицо должно быть четко видно.")
+        await q.edit_message_text("📸 Пришлите ваше фото (лицо должно быть четко видно).")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -175,11 +183,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cur.execute("SELECT credits FROM users WHERE user_id = %s", (uid,))
             res = cur.fetchone()
             if (not res or res['credits'] <= 0) and uid != ADMIN_ID:
-                await update.message.reply_text("🎫 Кредиты закончились. Пополните баланс."); return
+                await update.message.reply_text("🎫 Кредиты закончились. Пожалуйста, пополните баланс."); return
             if uid != ADMIN_ID: cur.execute("UPDATE users SET credits = credits - 1 WHERE user_id = %s", (uid,))
             conn.commit()
 
-    m = await update.message.reply_text("⏳ Магия началась (2-4 мин)...")
+    m = await update.message.reply_text("⏳ Генерирую фон (до 3-5 мин)...")
     try:
         file = await update.message.photo[-1].get_file()
         u_b64 = base64.b64encode(await file.download_as_bytearray()).decode('utf-8')
@@ -188,15 +196,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not url:
             await m.edit_text("❌ Ошибка Leonardo AI. Кредит возвращен."); await refund(uid); return
             
-        await m.edit_text("🔄 Открытка готова! Вклеиваю ваше лицо...")
+        await m.edit_text("🔄 Фон готов! Вклеиваю ваше лицо...")
         res_img = await swap_face(url, u_b64)
         
         if res_img == "FACE_NOT_FOUND":
-            await m.edit_text("❌ Нейросеть не нашла лицо на фоне. Попробуйте стиль 'Модерн' или 'Винтаж'. Кредит возвращен."); await refund(uid); return
+            await m.edit_text("❌ Лицо на фоне не распознано. Попробуйте стиль 'Модерн'. Кредит возвращен."); await refund(uid); return
         elif not res_img:
-            await m.edit_text("❌ Ошибка при замене лица. Кредит возвращен."); await refund(uid); return
+            await m.edit_text("❌ Ошибка Face Swap. Кредит возвращен."); await refund(uid); return
             
-        await update.message.reply_photo(res_img, caption="Ваша уникальная открытка готова! ✨")
+        await update.message.reply_photo(res_img, caption="Ваша винтажная открытка готова! ✨")
         await m.delete()
         context.user_data.clear()
     except Exception as e:
@@ -210,13 +218,13 @@ async def refund(uid):
 
 async def go_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton(f"{v['name']} - {v['price']}₽", callback_data=f"buy_{k}")] for k, v in PACKAGES.items()]
-    await update.callback_query.edit_message_text("Выберите пакет кредитов:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.callback_query.edit_message_text("Выберите пакет:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def buy_pkg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pk = PACKAGES[update.callback_query.data.replace("buy_", "")]
-    pay = Payment.create({"amount": {"value": str(pk['price']), "currency": "RUB"}, "confirmation": {"type": "redirect", "return_url": "https://t.me/opencard_bot"}, "metadata": {"u": update.effective_user.id, "c": pk['cnt']}}, uuid.uuid4())
+    pay = Payment.create({"amount": {"value": str(pk['price']), "currency": "RUB"}, "confirmation": {"type": "redirect", "return_url": "https://t.me/your_bot_name"}, "metadata": {"u": update.effective_user.id, "c": pk['cnt']}}, uuid.uuid4())
     kb = [[InlineKeyboardButton("💳 Оплатить", url=pay.confirmation.confirmation_url)]]
-    await update.callback_query.edit_message_text(f"К оплате: {pk['price']}₽.", reply_markup=InlineKeyboardMarkup(kb))
+    await update.callback_query.edit_message_text(f"Счет на {pk['price']}₽.", reply_markup=InlineKeyboardMarkup(kb))
 
 def main():
     init_db()
