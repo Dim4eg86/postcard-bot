@@ -45,60 +45,49 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS payments (id SERIAL PRIMARY KEY, user_id BIGINT, payment_id TEXT, status TEXT, amount INT, count INT)")
             conn.commit()
 
-# --- ЛОГИКА НЕЙРОСЕТЕЙ ---
+# --- ЛОГИКА ГЕНЕРАЦИИ (LEONARDO + RUNPOD) ---
 async def generate_leonardo(theme, style, scene, count, gender, orientation):
-    subj = "Family with a child" if count == "couple" else ("Man" if gender == "man" else "Woman")
+    if count == "couple":
+        subj = "A happy family with a father, mother and child"
+    else:
+        subj = f"One adult {'man' if gender == 'man' else 'woman'}"
     
     style_configs = {
         "ussr": "Soviet 1950s holiday postcard style, gouache painting",
-        "vintage": "19th century vintage postcard, oil painting style, warm colors",
+        "vintage": "19th century vintage postcard, oil painting texture, warm colors",
         "modern": "Digital art, cinematic lighting, sharp focus"
     }
     
     current_style = style_configs.get(style, style_configs["vintage"])
     prompt = (
         f"{current_style}. {subj} standing in {scene}, looking at camera. "
-        f"Theme: {THEMES.get(theme, theme)}. Snow, 8k, detailed faces."
+        f"Theme: {THEMES.get(theme, theme)}. Snow, oil on canvas, detailed faces."
     )
     
-    headers = {
-        "Authorization": f"Bearer {LEONARDO_API_KEY}",
-        "Content-Type": "application/json",
-        "accept": "application/json"
-    }
-    
-    # ИСПОЛЬЗУЕМ LIGHTNING МОДЕЛЬ - ОНА САМАЯ СТАБИЛЬНАЯ ДЛЯ API
+    headers = {"Authorization": f"Bearer {LEONARDO_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "prompt": prompt,
         "width": 768 if orientation == "vertical" else 1024,
         "height": 1024 if orientation == "vertical" else 768,
         "num_images": 1,
-        "modelId": "6bef9f1b-29cb-40c7-b9df-32b51c1f67d3", # Leonardo Lightning XL
+        "modelId": "6bef9f1b-29cb-40c7-b9df-32b51c1f67d3", # Lightning XL
         "alchemy": True,
         "presetStyle": "DYNAMIC"
     }
     
     try:
         r = requests.post("https://cloud.leonardo.ai/api/rest/v1/generations", json=payload, headers=headers)
-        if r.status_code != 200:
-            logger.error(f"Leonardo Start Error: {r.text}")
-            return None
-            
+        if r.status_code != 200: return None
         gen_id = r.json().get("sdGenerationJob", {}).get("generationId")
         
-        for _ in range(30): # Lightning работает быстро, 30 итераций хватит
-            await asyncio.sleep(3)
-            try:
-                status_req = requests.get(f"https://cloud.leonardo.ai/api/rest/v1/generations/{gen_id}", headers=headers)
-                data = status_req.json()
-                job = data.get("generations_by_pk") or (data.get("generations")[0] if data.get("generations") else None)
-                
-                if job and job.get("status") == "COMPLETE":
-                    return job.get("generated_images")[0].get("url")
-                if job and job.get("status") == "FAILED": return None
-            except: continue
-    except Exception as e:
-        logger.error(f"Leonardo Global Error: {e}")
+        for _ in range(40):
+            await asyncio.sleep(4)
+            status_req = requests.get(f"https://cloud.leonardo.ai/api/rest/v1/generations/{gen_id}", headers=headers)
+            data = status_req.json()
+            job = data.get("generations_by_pk") or (data.get("generations")[0] if data.get("generations") else None)
+            if job and job.get("status") == "COMPLETE":
+                return job.get("generated_images")[0].get("url")
+    except: return None
     return None
 
 async def swap_face(t_url, u_b64):
@@ -110,20 +99,18 @@ async def swap_face(t_url, u_b64):
         
         run_res = requests.post(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run", json=payload, headers=headers).json()
         job_id = run_res.get("id")
-        if not job_id: return None
-
-        for i in range(100):
+        
+        for i in range(60):
             await asyncio.sleep(3)
             res = requests.get(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status/{job_id}", headers=headers).json()
-            status = res.get("status")
-            if status == "COMPLETED":
+            if res.get("status") == "COMPLETED":
                 out = res.get("output")
                 img_data = out if isinstance(out, str) else (out.get("image") or out.get("result"))
-                return base64.b64decode(img_data) if img_data else "FACE_NOT_FOUND"
-            if status == "FAILED": return None
+                return base64.b64decode(img_data)
     except: return None
     return None
 
+# --- ТЕЛЕГРАМ ОБРАБОТЧИКИ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     with get_db_connection() as conn:
@@ -132,7 +119,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cur.execute("SELECT credits FROM users WHERE user_id = %s", (uid,))
             res = cur.fetchone()
             c = res['credits'] if res else 0
-    kb = [[InlineKeyboardButton("🎨 Создать открытку", callback_data="go_create")], [InlineKeyboardButton("💰 Пополнить баланс", callback_data="go_pay")]]
+    kb = [[InlineKeyboardButton("🎨 Создать открытку", callback_data="go_create")], 
+          [InlineKeyboardButton("💰 Купить кредиты", callback_data="go_pay")]]
     await update.message.reply_text(f"Привет! Баланс: {c} 🎫", reply_markup=InlineKeyboardMarkup(kb))
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,26 +166,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cur.execute("SELECT credits FROM users WHERE user_id = %s", (uid,))
             res = cur.fetchone()
             if (not res or res['credits'] <= 0) and uid != ADMIN_ID:
-                await update.message.reply_text("🎫 Нет кредитов."); return
+                await update.message.reply_text("🎫 Нет кредитов. Купите их кнопкой ниже."); return
             if uid != ADMIN_ID: cur.execute("UPDATE users SET credits = credits - 1 WHERE user_id = %s", (uid,))
             conn.commit()
 
-    m = await update.message.reply_text("⏳ Магия в процессе...")
+    m = await update.message.reply_text("⏳ Магия в процессе (до 3 мин)...")
     try:
         file = await update.message.photo[-1].get_file()
         u_b64 = base64.b64encode(await file.download_as_bytearray()).decode('utf-8')
         
         url = await generate_leonardo(context.user_data['theme'], context.user_data['style'], context.user_data['scene'], context.user_data['count'], context.user_data['gender'], context.user_data['orient'])
         if not url:
-            await m.edit_text("❌ Ошибка Leonardo. Кредит возвращен."); await refund(uid); return
+            await m.edit_text("❌ Ошибка фона. Кредит вернули."); await refund(uid); return
             
         res_img = await swap_face(url, u_b64)
-        if res_img == "FACE_NOT_FOUND":
-            await m.edit_text("❌ Лицо не найдено. Кредит возвращен."); await refund(uid); return
-        elif not res_img:
-            await m.edit_text("❌ Ошибка замены. Кредит возвращен."); await refund(uid); return
+        if not res_img:
+            await m.edit_text("❌ Ошибка замены лица. Кредит вернули."); await refund(uid); return
             
-        await update.message.reply_photo(res_img, caption="Ваша открытка! ✨")
+        await update.message.reply_photo(res_img, caption="Ваша винтажная открытка готова! ✨")
         await m.delete()
         context.user_data.clear()
     except Exception as e:
@@ -209,15 +195,25 @@ async def refund(uid):
             cur.execute("UPDATE users SET credits = credits + 1 WHERE user_id = %s", (uid,))
             conn.commit()
 
+# --- ОПЛАТА ЮKASSA ---
 async def go_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton(f"{v['name']} - {v['price']}₽", callback_data=f"buy_{k}")] for k, v in PACKAGES.items()]
-    await update.callback_query.edit_message_text("Пакеты:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.callback_query.edit_message_text("Выберите пакет кредитов:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def buy_pkg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pk = PACKAGES[update.callback_query.data.replace("buy_", "")]
-    pay = Payment.create({"amount": {"value": str(pk['price']), "currency": "RUB"}, "confirmation": {"type": "redirect", "return_url": "https://t.me/opencard_bot"}, "metadata": {"u": update.effective_user.id, "c": pk['cnt']}}, uuid.uuid4())
-    kb = [[InlineKeyboardButton("💳 Оплатить", url=pay.confirmation.confirmation_url)]]
-    await update.callback_query.edit_message_text(f"Счет на {pk['price']}₽.", reply_markup=InlineKeyboardMarkup(kb))
+    pk_id = update.callback_query.data.replace("buy_", "")
+    pk = PACKAGES[pk_id]
+    
+    payment = Payment.create({
+        "amount": {"value": str(pk['price']), "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": "https://t.me/your_bot_username"},
+        "metadata": {"u": update.effective_user.id, "c": pk['cnt']},
+        "capture": True,
+        "description": f"Пополнение баланса бота: {pk['name']}"
+    }, uuid.uuid4())
+    
+    kb = [[InlineKeyboardButton("💳 Перейти к оплате", url=payment.confirmation.confirmation_url)]]
+    await update.callback_query.edit_message_text(f"Счет на {pk['price']}₽ сформирован. После оплаты кредиты зачислятся автоматически.", reply_markup=InlineKeyboardMarkup(kb))
 
 def main():
     init_db()
