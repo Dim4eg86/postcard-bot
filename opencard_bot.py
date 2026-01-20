@@ -47,9 +47,22 @@ def init_db():
 
 # --- ЛОГИКА НЕЙРОСЕТЕЙ ---
 async def generate_leonardo(theme, style, scene, count, gender, orientation):
+    # УЛУЧШЕННЫЕ ПРОМПТЫ ДЛЯ ЛУЧШЕГО РАСПОЗНАВАНИЯ ЛИЦ
     subj = "Couple" if count == "couple" else ("Man" if gender == "man" else "Woman")
-    style_desc = {"ussr": "Soviet gouache illustration", "vintage": "Classical oil painting", "modern": "Clean digital art"}.get(style)
-    prompt = f"{style_desc} of {subj} in {scene}, theme {THEMES.get(theme, theme)}, festive atmosphere, masterpiece, highly detailed."
+    
+    # Описания стилей
+    style_desc = {
+        "ussr": "Detailed Soviet gouache poster style, flat colors but clear facial features",
+        "vintage": "Classic oil painting, realistic face, warm lighting",
+        "modern": "Digital art, sharp focus, cinematic lighting, very clear face"
+    }.get(style)
+
+    # Формируем промпт так, чтобы лицо было ГЛАВНЫМ объектом
+    prompt = (
+        f"Close up portrait of {subj}, looking at camera, {style_desc}, "
+        f"in {scene}, theme {THEMES.get(theme, theme)}, "
+        f"festive atmosphere, highly detailed, masterpiece, sharp focus on face."
+    )
     
     headers = {"Authorization": f"Bearer {LEONARDO_API_KEY}", "Content-Type": "application/json", "accept": "application/json"}
     payload = {
@@ -58,7 +71,7 @@ async def generate_leonardo(theme, style, scene, count, gender, orientation):
         "height": 1024 if orientation == "vertical" else 768,
         "num_images": 1,
         "alchemy": True,
-        "presetStyle": "ILLUSTRATION"
+        "presetStyle": "PORTRAIT" if style == "modern" else "ILLUSTRATION"
     }
     
     try:
@@ -93,14 +106,14 @@ async def swap_face(t_url, u_b64):
             
             if status == "COMPLETED":
                 out = res.get("output")
-                if not out:
-                    logger.error(f"Face not found in Job {job_id}")
-                    return "FACE_NOT_FOUND"
-                
+                if not out: return "FACE_NOT_FOUND"
                 img_data = out if isinstance(out, str) else (out.get("image") or out.get("result"))
-                return base64.b64decode(img_data) if img_data else None
+                return base64.b64decode(img_data) if img_data else "FACE_NOT_FOUND"
             
             if status == "FAILED":
+                err_msg = str(res.get("error", "")) + str(res.get("output", ""))
+                if "does not contain any faces" in err_msg:
+                    return "FACE_NOT_FOUND"
                 logger.error(f"RunPod FAILED: {res}")
                 return None
     except Exception as e:
@@ -117,41 +130,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res = cur.fetchone()
             c = res['credits'] if res else 0
     kb = [[InlineKeyboardButton("🎨 Создать открытку", callback_data="go_create")], [InlineKeyboardButton("💰 Купить кредиты", callback_data="go_pay")]]
-    await update.message.reply_text(f"Ваш баланс: {c} 🎫", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(f"Ваш баланс: {c} 🎫\nДля создания открытки нажмите кнопку ниже.", reply_markup=InlineKeyboardMarkup(kb))
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     d = q.data
     if d == "go_create":
         kb = [[InlineKeyboardButton("📱 Портрет", callback_data="o_v"), InlineKeyboardButton("🖼 Альбом", callback_data="o_h")]]
-        await q.edit_message_text("Выберите формат:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Выберите формат открытки:", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("o_"):
         context.user_data['orient'] = "vertical" if d == "o_v" else "horizontal"
         kb = [[InlineKeyboardButton(v, callback_data=f"t_{k}")] for k, v in THEMES.items()]
-        await q.edit_message_text("Праздник:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("К какому празднику готовим?", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("t_"):
         context.user_data['theme'] = d[2:]
         kb = [[InlineKeyboardButton("👤 Один человек", callback_data="c_s"), InlineKeyboardButton("👨‍👩‍ Пара", callback_data="c_g")]]
-        await q.edit_message_text("Количество людей:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Кто будет на открытке?", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("c_"):
         context.user_data['count'] = "single" if d == "c_s" else "couple"
         kb = [[InlineKeyboardButton(v, callback_data=f"s_{k}")] for k, v in STYLES.items()]
-        await q.edit_message_text("Стиль:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Выберите художественный стиль:", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("s_"):
         context.user_data['style'] = d[2:]
         kb = [[InlineKeyboardButton(v, callback_data=f"sc_{k}")] for k, v in SCENES.items()]
-        await q.edit_message_text("Место действия:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Где происходит действие?", reply_markup=InlineKeyboardMarkup(kb))
     elif d.startswith("sc_"):
         context.user_data['scene'] = d[3:]
         if context.user_data['count'] == "single":
             kb = [[InlineKeyboardButton("👨 Мужчина", callback_data="g_m"), InlineKeyboardButton("👩 Женщина", callback_data="g_w")]]
-            await q.edit_message_text("Кто на фото?", reply_markup=InlineKeyboardMarkup(kb))
+            await q.edit_message_text("Пол человека на фото:", reply_markup=InlineKeyboardMarkup(kb))
         else:
             context.user_data['gender'] = "mixed"
-            await q.edit_message_text("📸 Теперь пришлите ваше фото.")
+            await q.edit_message_text("📸 Почти готово! Пришлите ваше фото (селфи).")
     elif d.startswith("g_"):
         context.user_data['gender'] = "man" if d == "g_m" else "woman"
-        await q.edit_message_text("📸 Теперь пришлите ваше фото.")
+        await q.edit_message_text("📸 Почти готово! Пришлите ваше фото (селфи).")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -162,40 +175,43 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cur.execute("SELECT credits FROM users WHERE user_id = %s", (uid,))
             res = cur.fetchone()
             if (not res or res['credits'] <= 0) and uid != ADMIN_ID:
-                await update.message.reply_text("❌ У вас закончились кредиты. Пополните баланс."); return
+                await update.message.reply_text("❌ У вас 0 кредитов. Пожалуйста, пополните баланс."); return
             if uid != ADMIN_ID: cur.execute("UPDATE users SET credits = credits - 1 WHERE user_id = %s", (uid,))
             conn.commit()
 
-    m = await update.message.reply_text("⏳ Магия началась! Генерирую открытку (2-4 мин)...")
+    m = await update.message.reply_text("⏳ Генерирую шедевр (может занять 2-4 мин)...")
     try:
         file = await update.message.photo[-1].get_file()
         u_b64 = base64.b64encode(await file.download_as_bytearray()).decode('utf-8')
         
+        # 1. Генерируем фон в Leonardo
         url = await generate_leonardo(context.user_data['theme'], context.user_data['style'], context.user_data['scene'], context.user_data['count'], context.user_data['gender'], context.user_data['orient'])
         if not url:
-            await m.edit_text("❌ Ошибка генерации фона. Кредит возвращен.")
+            await m.edit_text("❌ Ошибка Leonardo AI. Кредит возвращен.")
             with get_db_connection() as conn:
                 with conn.cursor() as cur: cur.execute("UPDATE users SET credits = credits + 1 WHERE user_id = %s", (uid,))
                 conn.commit()
             return
             
-        await m.edit_text("🔄 Фон готов! Вклеиваю лицо...")
+        await m.edit_text("🔄 Фон готов! Накладываю ваше лицо...")
+        
+        # 2. Делаем Face Swap в RunPod
         res_img = await swap_face(url, u_b64)
         
         if res_img == "FACE_NOT_FOUND":
-            await m.edit_text("❌ Нейросеть не смогла распознать лицо на фоне. Попробуйте другой стиль (например, Модерн). Кредит возвращен.")
+            await m.edit_text("❌ Не удалось найти лицо на открытке для замены. Попробуйте другой стиль (Модерн - самый надежный). Кредит возвращен.")
             with get_db_connection() as conn:
                 with conn.cursor() as cur: cur.execute("UPDATE users SET credits = credits + 1 WHERE user_id = %s", (uid,))
                 conn.commit()
             return
         elif not res_img:
-            await m.edit_text("❌ Ошибка замены лица. Кредит возвращен.")
+            await m.edit_text("❌ Ошибка сервера замены лиц. Кредит возвращен.")
             with get_db_connection() as conn:
                 with conn.cursor() as cur: cur.execute("UPDATE users SET credits = credits + 1 WHERE user_id = %s", (uid,))
                 conn.commit()
             return
             
-        await update.message.reply_photo(res_img, caption="Ваша уникальная открытка готова! ✨")
+        await update.message.reply_photo(res_img, caption="Ваша открытка готова! ✨ Приходите еще!")
         await m.delete()
         context.user_data.clear()
     except Exception as e:
@@ -203,13 +219,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def go_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton(f"{v['name']} - {v['price']}₽", callback_data=f"buy_{k}")] for k, v in PACKAGES.items()]
-    await update.callback_query.edit_message_text("Выберите пакет кредитов:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.callback_query.edit_message_text("Выберите количество кредитов:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def buy_pkg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pk = PACKAGES[update.callback_query.data.replace("buy_", "")]
-    pay = Payment.create({"amount": {"value": str(pk['price']), "currency": "RUB"}, "confirmation": {"type": "redirect", "return_url": "https://t.me/your_bot_name"}, "metadata": {"u": update.effective_user.id, "c": pk['cnt']}}, uuid.uuid4())
-    kb = [[InlineKeyboardButton("💳 Оплатить", url=pay.confirmation.confirmation_url)]]
-    await update.callback_query.edit_message_text(f"Счет на {pk['price']}₽ создан.", reply_markup=InlineKeyboardMarkup(kb))
+    pay = Payment.create({"amount": {"value": str(pk['price']), "currency": "RUB"}, "confirmation": {"type": "redirect", "return_url": "https://t.me/opencard_bot"}, "metadata": {"u": update.effective_user.id, "c": pk['cnt']}}, uuid.uuid4())
+    kb = [[InlineKeyboardButton("💳 Перейти к оплате", url=pay.confirmation.confirmation_url)]]
+    await update.callback_query.edit_message_text(f"Вы выбрали: {pk['name']}. К оплате: {pk['price']}₽.", reply_markup=InlineKeyboardMarkup(kb))
 
 def main():
     init_db()
