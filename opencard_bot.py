@@ -117,24 +117,20 @@ async def swap_face(target_url, user_b64):
             status = status_resp.get("status")
             
             if status == "COMPLETED":
-                logger.info(f"Job {job_id} COMPLETED. Searching image data...")
                 full_output = status_resp.get("output")
                 img_data = None
-                
                 if isinstance(full_output, dict):
                     img_data = full_output.get("image") or full_output.get("result") or full_output.get("output")
                 elif isinstance(full_output, str):
                     img_data = full_output
                 
-                if not img_data: # Резервный поиск в корне
+                if not img_data:
                     img_data = status_resp.get("image") or status_resp.get("result")
 
                 if img_data:
                     if isinstance(img_data, str) and "," in img_data: img_data = img_data.split(",")[1]
                     return base64.b64decode(img_data)
-                else:
-                    logger.error(f"Structure not recognized. Keys: {status_resp.keys()}")
-                    return None
+                return None
             
             if status in ["FAILED", "CANCELLED"]: return None
         return None
@@ -156,28 +152,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    d = q.data
-    if d == "go_create":
+    if q.data == "go_create":
         kb = [[InlineKeyboardButton("🖼 Гор.", callback_data="o_h"), InlineKeyboardButton("📱 Вер.", callback_data="o_v")]]
         await q.edit_message_text("Формат:", reply_markup=InlineKeyboardMarkup(kb))
-    elif d.startswith("o_"):
-        context.user_data['orient'] = "horizontal" if d == "o_h" else "vertical"
+    elif q.data.startswith("o_"):
+        context.user_data['orient'] = "horizontal" if q.data == "o_h" else "vertical"
         kb = [[InlineKeyboardButton(v, callback_data=f"t_{k}")] for k, v in CONGRATS_TEXTS.items()]
         await q.edit_message_text("Тема:", reply_markup=InlineKeyboardMarkup(kb))
-    elif d.startswith("t_"):
-        context.user_data['theme'] = d[2:]
+    elif q.data.startswith("t_"):
+        context.user_data['theme'] = q.data[2:]
         kb = [[InlineKeyboardButton("👤 Один", callback_data="c_s"), InlineKeyboardButton("👨‍👩‍ Семья", callback_data="c_g")]]
         await q.edit_message_text("Кто на фото?", reply_markup=InlineKeyboardMarkup(kb))
-    elif d.startswith("c_"):
-        context.user_data['count'] = "single" if d == "c_s" else "couple"
+    elif q.data.startswith("c_"):
+        context.user_data['count'] = "single" if q.data == "c_s" else "couple"
         if context.user_data['count'] == "single":
             kb = [[InlineKeyboardButton("👨 Мужчина", callback_data="g_m"), InlineKeyboardButton("👩 Женщина", callback_data="g_w")]]
             await q.edit_message_text("Пол:", reply_markup=InlineKeyboardMarkup(kb))
         else:
             context.user_data['gender'] = "mixed"
             await q.edit_message_text("📸 Отправьте селфи.")
-    elif d.startswith("g_"):
-        context.user_data['gender'] = "man" if d == "g_m" else "woman"
+    elif q.data.startswith("g_"):
+        context.user_data['gender'] = "man" if q.data == "g_m" else "woman"
         await q.edit_message_text("📸 Отправьте селфи.")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -237,4 +232,21 @@ async def check_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cur.execute("SELECT status FROM payments WHERE payment_id = %s", (pid,))
                 if cur.fetchone()['status'] != "succeeded":
                     cur.execute("UPDATE payments SET status = 'succeeded' WHERE payment_id = %s", (pid,))
-                    cur.execute("UPDATE users SET credits =
+                    cur.execute("UPDATE users SET credits = credits + %s WHERE user_id = %s", (cnt, uid))
+                    conn.commit()
+                    await update.callback_query.message.reply_text(f"🎉 Начислено {cnt} кр.")
+    else: await update.callback_query.answer("Оплата не подтверждена.", show_alert=True)
+
+def main():
+    init_db()
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(go_pay, pattern="^go_pay$"))
+    app.add_handler(CallbackQueryHandler(buy_pkg, pattern="^buy_"))
+    app.add_handler(CallbackQueryHandler(check_pay, pattern="^check_"))
+    app.add_handler(CallbackQueryHandler(handle_menu, pattern="^(go_create|o_|t_|c_|g_)"))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
