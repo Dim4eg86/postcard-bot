@@ -102,7 +102,7 @@ async def swap_face(target_url, user_b64):
         t_b64 = base64.b64encode(t_resp.content).decode('utf-8')
         headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}", "Content-Type": "application/json"}
         
-        # Исправленный payload: отключаем апскейл и лишнюю обработку
+        # Исправленный payload: ОТКЛЮЧАЕМ UPSCALER И РЕСТАВРАЦИЮ
         payload = {
             "input": {
                 "source_image": user_b64,
@@ -123,7 +123,6 @@ async def swap_face(target_url, user_b64):
             
             if status == "COMPLETED":
                 out = status_resp.get("output")
-                # Извлекаем строку изображения
                 img_data = out.get("image") if isinstance(out, dict) else out
                 if img_data:
                     if isinstance(img_data, str) and "," in img_data: img_data = img_data.split(",")[1]
@@ -175,7 +174,6 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if 'theme' not in context.user_data: return
-    
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT credits FROM users WHERE user_id = %s", (uid,))
@@ -184,25 +182,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("🎫 У вас закончились кредиты."); return
             if uid != ADMIN_ID: cur.execute("UPDATE users SET credits = credits - 1 WHERE user_id = %s", (uid,))
             conn.commit()
-
-    m = await update.message.reply_text("⏳ Магия в процессе... Это займет около минуты.")
+    m = await update.message.reply_text("⏳ Магия в процессе...")
     try:
         file = await update.message.photo[-1].get_file()
         u_b64 = base64.b64encode(await file.download_as_bytearray()).decode('utf-8')
-        
         url = await generate_leonardo(context.user_data['theme'], context.user_data['gender'], context.user_data['orient'], context.user_data['count'])
-        if not url: raise Exception("Gen Error")
-        
         swapped = await swap_face(url, u_b64)
         if not swapped: raise Exception("Swap failed")
-        
         final = draw_card_elements(swapped, context.user_data['theme'])
         await update.message.reply_photo(final, caption="✨ Ваша ретро-открытка готова!")
         await m.delete()
         context.user_data.clear()
     except Exception as e:
         logger.error(f"Final Error: {e}")
-        await m.edit_text("❌ Произошла ошибка. Кредит возвращен.")
+        await m.edit_text("❌ Ошибка. Кредит возвращен.")
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("UPDATE users SET credits = credits + 1 WHERE user_id = %s", (uid,))
@@ -210,7 +203,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def go_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton(f"{v['name']} - {v['price']}₽", callback_data=f"buy_{k}")] for k, v in PACKAGES.items()]
-    await update.callback_query.edit_message_text("Выберите пакет кредитов:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.callback_query.edit_message_text("Выберите пакет:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def buy_pkg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pk = PACKAGES[update.callback_query.data.replace("buy_", "")]
@@ -224,7 +217,7 @@ async def buy_pkg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with conn.cursor() as cur:
             cur.execute("INSERT INTO payments (user_id, payment_id, status, amount, count) VALUES (%s, %s, %s, %s, %s)", (uid, payment.id, "pending", pk['price'], pk['cnt']))
             conn.commit()
-    kb = [[InlineKeyboardButton("💳 Оплатить", url=payment.confirmation.confirmation_url), InlineKeyboardButton("✅ Проверить оплату", callback_data=f"check_{payment.id}")]]
+    kb = [[InlineKeyboardButton("💳 Оплатить", url=payment.confirmation.confirmation_url), InlineKeyboardButton("✅ Проверить", callback_data=f"check_{payment.id}")]]
     await update.callback_query.edit_message_text(f"К оплате: {pk['price']}₽.", reply_markup=InlineKeyboardMarkup(kb))
 
 async def check_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -239,8 +232,8 @@ async def check_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     cur.execute("UPDATE payments SET status = 'succeeded' WHERE payment_id = %s", (pid,))
                     cur.execute("UPDATE users SET credits = credits + %s WHERE user_id = %s", (cnt, uid))
                     conn.commit()
-                    await update.callback_query.message.reply_text(f"🎉 Оплата прошла! Начислено {cnt} кредитов.")
-    else: await update.callback_query.answer("Оплата еще не подтверждена.", show_alert=True)
+                    await update.callback_query.message.reply_text(f"🎉 Начислено {cnt} кр.")
+    else: await update.callback_query.answer("Оплата не подтверждена.", show_alert=True)
 
 def main():
     init_db()
