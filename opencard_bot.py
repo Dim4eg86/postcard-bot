@@ -30,17 +30,29 @@ async def generate_retro_background():
     return None
 
 async def runpod_face_swap(target_url, source_b64):
+    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Скачиваем фон и конвертируем в Base64 для воркера
+    try:
+        bg_resp = requests.get(target_url)
+        target_b64 = base64.b64encode(bg_resp.content).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Failed to download/encode background: {e}")
+        return None
+
     headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}", "Content-Type": "application/json"}
-    payload = {"input": {"source_image": source_b64, "target_image": target_url, "face_restore": True, "upscale": 1}}
+    payload = {
+        "input": {
+            "source_image": source_b64,
+            "target_image": target_b64, # Теперь передаем Base64, а не URL
+            "face_restore": True,
+            "upscale": 1
+        }
+    }
     
     try:
         run = requests.post(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run", json=payload, headers=headers).json()
         job_id = run.get("id")
-        if not job_id: 
-            logger.error(f"RunPod failed to start: {run}")
-            return None
+        if not job_id: return None
 
-        # Увеличиваем количество попыток до 80 (почти 5 минут ожидания)
         for _ in range(80):
             await asyncio.sleep(4)
             status_res = requests.get(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status/{job_id}", headers=headers).json()
@@ -48,11 +60,16 @@ async def runpod_face_swap(target_url, source_b64):
             
             if status == "COMPLETED":
                 output = status_res.get("output")
+                img_data = None
                 if isinstance(output, dict):
-                    res_url = output.get("image_url") or output.get("image")
-                    if res_url and res_url.startswith("http"): return requests.get(res_url).content
-                    if res_url: return base64.b64decode(res_url.split(",")[-1])
-                return base64.b64decode(output.split(",")[-1])
+                    img_data = output.get("image_url") or output.get("image")
+                else:
+                    img_data = output
+                
+                if img_data and img_data.startswith("http"):
+                    return requests.get(img_data).content
+                if img_data:
+                    return base64.b64decode(img_data.split(",")[-1])
             
             if status in ["FAILED", "CANCELLED"]:
                 logger.error(f"RunPod Job Failed: {status_res}")
@@ -72,7 +89,7 @@ def finalize_image(image_bytes):
     return out.getvalue()
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    m = await update.message.reply_text("❄️ Рисую вашу открытку (может занять до 2-3 минут)...")
+    m = await update.message.reply_text("❄️ Рисую вашу открытку...")
     try:
         file = await update.message.photo[-1].get_file()
         user_img = base64.b64encode(await file.download_as_bytearray()).decode('utf-8')
@@ -80,15 +97,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bg_url = await generate_retro_background()
         if not bg_url: return await m.edit_text("❌ Ошибка Leonardo.")
 
-        await m.edit_text("👤 Вписываю лицо в открытку...")
+        await m.edit_text("👤 Вписываю лицо (RunPod)...")
         swapped = await runpod_face_swap(bg_url, user_img)
         
         if swapped:
             final = finalize_image(swapped)
-            await update.message.reply_photo(final, caption="✨ Готово!")
+            await update.message.reply_photo(final, caption="✨ Ваша ретро-открытка готова!")
             await m.delete()
         else:
-            await m.edit_text("❌ RunPod не ответил вовремя. Попробуйте еще раз.")
+            await m.edit_text("❌ Ошибка Face Swap. Проверьте логи.")
     except Exception as e:
         logger.error(f"General Error: {e}")
         await m.edit_text("❌ Ошибка приложения.")
