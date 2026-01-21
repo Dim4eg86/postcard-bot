@@ -12,7 +12,7 @@ import base64
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import io
 
-# --- 1. НАСТРОЙКИ (Railway ENV) ---
+# --- 1. НАСТРОЙКИ ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -53,37 +53,29 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS payments (id SERIAL PRIMARY KEY, user_id BIGINT, payment_id TEXT, status TEXT, amount INT, count INT)")
             conn.commit()
 
-# --- 3. PILLOW (ОФОРМЛЕНИЕ) ---
+# --- 3. ГРАФИКА ---
 def draw_card_elements(image_bytes, theme_key):
     img = Image.open(io.BytesIO(image_bytes))
     img = ImageOps.expand(img, border=(35, 35, 35, 85), fill='#FDFDFD')
     draw = ImageDraw.Draw(img)
     w, h = img.size
     draw.rectangle([15, 15, w-15, h-15], outline="#C0B9B0", width=1)
-    
     text = CONGRATS_TEXTS.get(theme_key, "Поздравляем!")
-    font_path = "font.ttf"
     try:
-        font = ImageFont.truetype(font_path, 44) if os.path.exists(font_path) else ImageFont.load_default()
+        font = ImageFont.truetype("font.ttf", 44)
     except:
         font = ImageFont.load_default()
-
     draw.text((w/2, h-45), text, font=font, fill="#6D4C41", anchor="mm")
     out = io.BytesIO()
-    img.save(out, format="JPEG", quality=95)
+    img.save(out, format="JPEG", quality=90)
     return out.getvalue()
 
 # --- 4. НЕЙРОСЕТИ ---
 async def generate_leonardo(theme_key, gender, orientation, count):
     subj = "One single person" if count == "single" else "A happy family"
-    gender_str = "man" if gender == "man" else "woman"
-    prompt = (f"Nostalgic Soviet era postcard illustration, {subj} ({gender_str if count=='single' else ''}) looking at camera. "
-              f"Style of soft pastel drawing on textured paper, Soviet realism. Muted colors, winter scene, masterpiece.")
-    
+    prompt = f"Nostalgic Soviet era postcard illustration, {subj}, Soviet realism, winter, masterpiece."
     headers = {"Authorization": f"Bearer {LEONARDO_API_KEY}", "Content-Type": "application/json"}
-    payload = {"prompt": prompt, "width": 1024 if orientation == "horizontal" else 768, 
-               "height": 768 if orientation == "horizontal" else 1024, "alchemy": True, "presetStyle": "ILLUSTRATION"}
-    
+    payload = {"prompt": prompt, "width": 1024 if orientation == "horizontal" else 768, "height": 768 if orientation == "horizontal" else 1024, "alchemy": True}
     try:
         r = requests.post("https://cloud.leonardo.ai/api/rest/v1/generations", json=payload, headers=headers)
         gen_id = r.json().get("sdGenerationJob", {}).get("generationId")
@@ -94,48 +86,47 @@ async def generate_leonardo(theme_key, gender, orientation, count):
             if job and job.get("status") == "COMPLETE":
                 return job.get("generated_images")[0].get("url")
         return None
-    except Exception as e:
-        logger.error(f"Leonardo error: {e}")
-        return None
+    except: return None
 
 async def swap_face(target_url, user_b64):
     try:
         t_resp = requests.get(target_url, timeout=30)
-        if t_resp.status_code != 200: return None
         t_b64 = base64.b64encode(t_resp.content).decode('utf-8')
-        
         headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}", "Content-Type": "application/json"}
-        payload = {"input": {"source_image": user_b64, "target_image": t_b64, "face_restorer_name": "CodeFormer"}}
         
-        run_res = requests.post(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run", json=payload, headers=headers, timeout=30).json()
-        job_id = run_res.get("id")
+        # ОТКЛЮЧАЕМ UPSCALER И ПРОВЕРЯЕМ ПАРАМЕТРЫ
+        payload = {
+            "input": {
+                "source_image": user_b64,
+                "target_image": t_b64,
+                "face_restorer_name": "None", # Отключаем тяжелую реставрацию для теста
+                "upscale": 1
+            }
+        }
+        
+        r = requests.post(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run", json=payload, headers=headers).json()
+        job_id = r.get("id")
         if not job_id: return None
 
         for i in range(120):
             await asyncio.sleep(3)
+            # Используем универсальный метод проверки статуса
             status_resp = requests.get(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status/{job_id}", headers=headers).json()
             status = status_resp.get("status")
             
             if status == "COMPLETED":
-                full_output = status_resp.get("output")
-                img_data = None
-                if isinstance(full_output, dict):
-                    img_data = full_output.get("image") or full_output.get("result") or full_output.get("output")
-                elif isinstance(full_output, str):
-                    img_data = full_output
-                
-                if not img_data:
-                    img_data = status_resp.get("image") or status_resp.get("result")
-
+                out = status_resp.get("output")
+                img_data = out.get("image") if isinstance(out, dict) else out
                 if img_data:
-                    if isinstance(img_data, str) and "," in img_data: img_data = img_data.split(",")[1]
+                    if "," in img_data: img_data = img_data.split(",")[1]
                     return base64.b64decode(img_data)
                 return None
-            
-            if status in ["FAILED", "CANCELLED"]: return None
+            if status in ["FAILED", "CANCELLED"]: 
+                logger.error(f"RunPod Error: {status_resp}")
+                return None
         return None
     except Exception as e:
-        logger.error(f"FaceSwap error: {e}")
+        logger.error(f"Swap Error: {e}")
         return None
 
 # --- 5. ОБРАБОТЧИКИ ---
@@ -148,7 +139,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res = cur.fetchone()
             c = res['credits'] if res else 0
     kb = [[InlineKeyboardButton("🎨 Создать открытку", callback_data="go_create")], [InlineKeyboardButton("💰 Купить кредиты", callback_data="go_pay")]]
-    await update.message.reply_text(f"🎫 Кредитов: {c}\nСоздадим шедевр?", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(f"🎫 Кредитов: {c}\nНачнем?", reply_markup=InlineKeyboardMarkup(kb))
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -186,7 +177,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("🎫 Нет кредитов."); return
             if uid != ADMIN_ID: cur.execute("UPDATE users SET credits = credits - 1 WHERE user_id = %s", (uid,))
             conn.commit()
-    m = await update.message.reply_text("⏳ Магия в процессе...")
+    m = await update.message.reply_text("⏳ Магия...")
     try:
         file = await update.message.photo[-1].get_file()
         u_b64 = base64.b64encode(await file.download_as_bytearray()).decode('utf-8')
@@ -194,11 +185,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         swapped = await swap_face(url, u_b64)
         if not swapped: raise Exception("Swap failed")
         final = draw_card_elements(swapped, context.user_data['theme'])
-        await update.message.reply_photo(final, caption="✨ Ваша открытка!")
+        await update.message.reply_photo(final, caption="✨ Готово!")
         await m.delete()
         context.user_data.clear()
     except Exception as e:
-        logger.error(f"Process error: {e}")
+        logger.error(f"Error: {e}")
         await m.edit_text("❌ Ошибка. Кредит возвращен.")
         with get_db_connection() as conn:
             with conn.cursor() as cur:
