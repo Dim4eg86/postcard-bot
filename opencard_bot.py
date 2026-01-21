@@ -73,23 +73,16 @@ def draw_card_elements(image_bytes, theme_key):
     img.save(out, format="JPEG", quality=95)
     return out.getvalue()
 
-# --- 4. НЕЙРОСЕТИ (ИСПРАВЛЕННЫЙ LEONARDO И RUNPOD) ---
+# --- 4. НЕЙРОСЕТИ ---
 async def generate_leonardo(theme_key, gender, orientation, count):
     subj = "One single person" if count == "single" else "A happy family"
     gender_str = "man" if gender == "man" else "woman"
-    
     prompt = (f"Nostalgic Soviet era postcard illustration, {subj} ({gender_str if count=='single' else ''}) looking at camera. "
-              f"Style of soft pastel drawing on textured paper, Soviet realism. Muted natural colors. "
-              f"Winter scene, falling snow, realistic facial features, masterpiece, centered.")
+              f"Style of soft pastel drawing on textured paper, Soviet realism. Muted colors, winter scene, masterpiece.")
     
     headers = {"Authorization": f"Bearer {LEONARDO_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "prompt": prompt,
-        "width": 1024 if orientation == "horizontal" else 768,
-        "height": 768 if orientation == "horizontal" else 1024,
-        "alchemy": True,
-        "presetStyle": "ILLUSTRATION"
-    }
+    payload = {"prompt": prompt, "width": 1024 if orientation == "horizontal" else 768, 
+               "height": 768 if orientation == "horizontal" else 1024, "alchemy": True, "presetStyle": "ILLUSTRATION"}
     
     try:
         r = requests.post("https://cloud.leonardo.ai/api/rest/v1/generations", json=payload, headers=headers)
@@ -112,46 +105,44 @@ async def swap_face(target_url, user_b64):
         t_b64 = base64.b64encode(t_resp.content).decode('utf-8')
         
         headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}", "Content-Type": "application/json"}
-        payload = {"input": {"source_image": user_b64, "target_image": t_b64, "face_restorer_name": "CodeFormer", "codeformer_fidelity": 0.5}}
+        payload = {"input": {"source_image": user_b64, "target_image": t_b64, "face_restorer_name": "CodeFormer"}}
         
         run_res = requests.post(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run", json=payload, headers=headers, timeout=30).json()
         job_id = run_res.get("id")
         if not job_id: return None
 
-        logger.info(f"RunPod Job {job_id} started. Waiting for completion...")
-
-        for i in range(120): # До 6 минут ожидания холодного старта
+        for i in range(120):
             await asyncio.sleep(3)
-            status_resp = requests.get(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status/{job_id}", headers=headers, timeout=20).json()
+            status_resp = requests.get(f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status/{job_id}", headers=headers).json()
             status = status_resp.get("status")
             
             if status == "COMPLETED":
-                logger.info(f"Job {job_id} COMPLETED. Parsing output...")
-                out = status_resp.get("output")
-                
-                # УНИВЕРСАЛЬНЫЙ ПАРСЕР
+                logger.info(f"Job {job_id} COMPLETED. Searching image data...")
+                full_output = status_resp.get("output")
                 img_data = None
-                if isinstance(out, dict):
-                    img_data = out.get("image") or out.get("result") or out.get("output") or out.get("b64")
-                elif isinstance(out, str):
-                    img_data = out
                 
+                if isinstance(full_output, dict):
+                    img_data = full_output.get("image") or full_output.get("result") or full_output.get("output")
+                elif isinstance(full_output, str):
+                    img_data = full_output
+                
+                if not img_data: # Резервный поиск в корне
+                    img_data = status_resp.get("image") or status_resp.get("result")
+
                 if img_data:
-                    if "," in img_data: img_data = img_data.split(",")[1]
+                    if isinstance(img_data, str) and "," in img_data: img_data = img_data.split(",")[1]
                     return base64.b64decode(img_data)
                 else:
-                    logger.error(f"Image not found in output: {out}")
+                    logger.error(f"Structure not recognized. Keys: {status_resp.keys()}")
                     return None
             
-            if status in ["FAILED", "CANCELLED"]:
-                logger.error(f"RunPod Job Failed: {status_resp}")
-                return None
+            if status in ["FAILED", "CANCELLED"]: return None
         return None
     except Exception as e:
         logger.error(f"FaceSwap error: {e}")
         return None
 
-# --- 5. ОБРАБОТЧИКИ ТЕЛЕГРАМ ---
+# --- 5. ОБРАБОТЧИКИ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     with get_db_connection() as conn:
@@ -192,7 +183,6 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if 'theme' not in context.user_data: return
-    
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT credits FROM users WHERE user_id = %s", (uid,))
@@ -201,20 +191,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("🎫 Нет кредитов."); return
             if uid != ADMIN_ID: cur.execute("UPDATE users SET credits = credits - 1 WHERE user_id = %s", (uid,))
             conn.commit()
-
-    m = await update.message.reply_text("⏳ Магия в процессе... (до 5 минут)")
+    m = await update.message.reply_text("⏳ Магия в процессе...")
     try:
         file = await update.message.photo[-1].get_file()
         u_b64 = base64.b64encode(await file.download_as_bytearray()).decode('utf-8')
-        
         url = await generate_leonardo(context.user_data['theme'], context.user_data['gender'], context.user_data['orient'], context.user_data['count'])
-        if not url: raise Exception("Leonardo Error")
-        
         swapped = await swap_face(url, u_b64)
-        if not swapped: raise Exception("Swap Error")
-        
+        if not swapped: raise Exception("Swap failed")
         final = draw_card_elements(swapped, context.user_data['theme'])
-        await update.message.reply_photo(final, caption="✨ Ваша ретро-открытка!")
+        await update.message.reply_photo(final, caption="✨ Ваша открытка!")
         await m.delete()
         context.user_data.clear()
     except Exception as e:
@@ -232,11 +217,9 @@ async def go_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def buy_pkg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pk = PACKAGES[update.callback_query.data.replace("buy_", "")]
     uid = update.effective_user.id
-    payment = Payment.create({
-        "amount": {"value": str(pk['price']), "currency": "RUB"},
+    payment = Payment.create({"amount": {"value": str(pk['price']), "currency": "RUB"},
         "confirmation": {"type": "redirect", "return_url": "https://t.me/postcard_aibot"},
-        "metadata": {"u": uid, "c": pk['cnt']}
-    }, uuid.uuid4())
+        "metadata": {"u": uid, "c": pk['cnt']}}, uuid.uuid4())
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("INSERT INTO payments (user_id, payment_id, status, amount, count) VALUES (%s, %s, %s, %s, %s)", (uid, payment.id, "pending", pk['price'], pk['cnt']))
@@ -254,21 +237,4 @@ async def check_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cur.execute("SELECT status FROM payments WHERE payment_id = %s", (pid,))
                 if cur.fetchone()['status'] != "succeeded":
                     cur.execute("UPDATE payments SET status = 'succeeded' WHERE payment_id = %s", (pid,))
-                    cur.execute("UPDATE users SET credits = credits + %s WHERE user_id = %s", (cnt, uid))
-                    conn.commit()
-                    await update.callback_query.message.reply_text(f"🎉 Начислено {cnt} кр.")
-    else: await update.callback_query.answer("Оплата не подтверждена.", show_alert=True)
-
-def main():
-    init_db()
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(go_pay, pattern="^go_pay$"))
-    app.add_handler(CallbackQueryHandler(buy_pkg, pattern="^buy_"))
-    app.add_handler(CallbackQueryHandler(check_pay, pattern="^check_"))
-    app.add_handler(CallbackQueryHandler(handle_menu, pattern="^(go_create|o_|t_|c_|g_)"))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+                    cur.execute("UPDATE users SET credits =
