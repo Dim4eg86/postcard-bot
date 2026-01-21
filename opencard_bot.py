@@ -12,65 +12,70 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Конфиг (Railway)
+# Конфиг из окружения
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 LEONARDO_API_KEY = os.getenv("LEONARDO_API_KEY")
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 RUNPOD_ENDPOINT_ID = os.getenv("RUNPOD_ENDPOINT_ID")
 
-# Промпт для художественного стиля
+# Улучшенный промпт для модели Phoenix
 RETRO_PROMPT = (
-    "Vintage Soviet New Year postcard, 1960s USSR style, gouache painting, "
-    "soft artistic brushstrokes, nostalgic winter scene, masterpiece, "
-    "offset printing texture, slightly faded colors, authentic retro illustration."
+    "A masterpiece vintage Soviet era holiday postcard illustration. "
+    "A cozy winter scene in the style of 1960s USSR gouache painting. "
+    "Soft artistic textures, nostalgic atmosphere, authentic retro colors, "
+    "detailed artistic brushwork, holiday spirit."
 )
 
 async def generate_retro_background():
-    """Исправленная генерация фона через Leonardo AI"""
+    """Генерация фона через стабильную модель Leonardo Phoenix"""
     url = "https://cloud.leonardo.ai/api/rest/v1/generations"
     headers = {
         "Authorization": f"Bearer {LEONARDO_API_KEY}",
         "Content-Type": "application/json",
         "accept": "application/json"
     }
+    # Используем модель Phoenix (она универсальна и стабильна)
     payload = {
         "prompt": RETRO_PROMPT,
         "width": 768,
         "height": 1024,
         "num_images": 1,
+        "modelId": "6b777458-2498-421d-9db1-13c21a952680", # Phoenix Model ID
         "alchemy": True,
-        "presetStyle": "ILLUSTRATION",
-        "modelId": "e71a1c2f-4f21-42d1-9b7a-91d01747c304" # Illustration model
+        "enhancePrompt": False
     }
     
     try:
         r = requests.post(url, json=payload, headers=headers).json()
-        # Исправленный поиск ID генерации
+        
+        # Обработка разных вариантов ответа API
         gen_data = r.get('sdGenerationJob') or r.get('generation_job')
         if not gen_data:
-            logger.error(f"Unexpected Leonardo response: {r}")
+            logger.error(f"Leonardo Error Response: {r}")
             return None
             
         gen_id = gen_data.get('generationId')
         
-        for _ in range(40):
-            await asyncio.sleep(4)
+        for _ in range(45):
+            await asyncio.sleep(3)
             res = requests.get(f"{url}/{gen_id}", headers=headers).json()
-            # Универсальный поиск картинок в ответе
-            gen_res = res.get("generations_by_pk") or res.get("generations", [{}])[0]
-            images = gen_res.get("generated_images", [])
+            
+            # Парсим ответ
+            g_data = res.get("generations_by_pk") or res.get("generations", [{}])[0]
+            images = g_data.get("generated_images", [])
             
             if images:
                 return images[0]['url']
                 
-            if gen_res.get("status") == "FAILED":
+            if g_data.get("status") == "FAILED":
+                logger.error("Leonardo generation failed in status check.")
                 return None
     except Exception as e:
-        logger.error(f"Leonardo API Error: {e}")
+        logger.error(f"Leonardo API Exception: {e}")
     return None
 
 async def runpod_face_swap(target_url, source_b64):
-    """Face Swap через RunPod с поддержкой S3"""
+    """Face Swap через RunPod с поддержкой S3 (чтобы избежать ошибки 400)"""
     headers = {"Authorization": f"Bearer {RUNPOD_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "input": {
@@ -92,7 +97,7 @@ async def runpod_face_swap(target_url, source_b64):
             if status_res.get("status") == "COMPLETED":
                 output = status_res.get("output")
                 
-                # Обработка URL от S3 (решает ошибку 400)
+                # Обработка ответа: ссылка или base64
                 if isinstance(output, dict):
                     res_url = output.get("image_url") or output.get("image")
                     if res_url and res_url.startswith("http"):
@@ -100,50 +105,60 @@ async def runpod_face_swap(target_url, source_b64):
                     if res_url:
                         return base64.b64decode(res_url.split(",")[-1])
                 return base64.b64decode(output.split(",")[-1])
+            
+            if status_res.get("status") in ["FAILED", "CANCELLED"]:
+                return None
     except Exception as e:
         logger.error(f"RunPod Error: {e}")
     return None
 
 def finalize_image(image_bytes):
-    """Оформление открытки"""
+    """Оформление открытки в Pillow"""
     img = Image.open(io.BytesIO(image_bytes))
-    img = ImageOps.expand(img, border=(25, 25, 25, 85), fill='#F5F5F0')
+    # Добавляем стилизованную рамку
+    img = ImageOps.expand(img, border=(25, 25, 25, 90), fill='#FDFBF5') # Цвет старой бумаги
     draw = ImageDraw.Draw(img)
+    
     try:
-        font = ImageFont.truetype("font.ttf", 50)
+        font = ImageFont.truetype("font.ttf", 48)
     except:
         font = ImageFont.load_default()
-    draw.text((img.size[0]/2, img.size[1]-45), "С Новым Годом!", font=font, fill="#B22222", anchor="mm")
+        
+    w, h = img.size
+    # Классический красный шрифт
+    draw.text((w/2, h-45), "С Новым Годом!", font=font, fill="#A52A2A", anchor="mm")
+    
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=95)
     return out.getvalue()
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    m = await update.message.reply_text("❄️ Создаю вашу ретро-открытку...")
+    m = await update.message.reply_text("✨ Рисую вашу открытку...")
     try:
         file = await update.message.photo[-1].get_file()
-        user_img = base64.b64encode(await file.download_as_bytearray()).decode('utf-8')
+        user_img_b64 = base64.b64encode(await file.download_as_bytearray()).decode('utf-8')
 
-        # 1. Фон
+        # 1. Генерация фона
         bg_url = await generate_retro_background()
         if not bg_url:
-            await m.edit_text("❌ Ошибка Leonardo AI. Попробуйте еще раз через минуту.")
+            await m.edit_text("❌ Ошибка Leonardo. Попробуйте еще раз.")
             return
 
-        # 2. Лицо
-        swapped = await runpod_face_swap(bg_url, user_img)
+        # 2. Замена лица
+        await m.edit_text("👤 Вписываю вас в историю...")
+        swapped = await runpod_face_swap(bg_url, user_img_b64)
         if not swapped:
-            await m.edit_text("❌ Ошибка RunPod. Проверьте баланс или настройки S3.")
+            await m.edit_text("❌ Ошибка замены лица.")
             return
 
-        # 3. Итог
+        # 3. Финализация
         final = finalize_image(swapped)
-        await update.message.reply_photo(final, caption="✨ С Новым Годом в стиле ретро!")
+        await update.message.reply_photo(final, caption="🎉 Ваша ретро-открытка готова!")
         await m.delete()
 
     except Exception as e:
         logger.error(f"General Error: {e}")
-        await m.edit_text("❌ Что-то пошло не так. Попробуйте другое фото.")
+        await m.edit_text("❌ Произошла ошибка. Попробуйте другое фото.")
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
