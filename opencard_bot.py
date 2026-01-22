@@ -3,23 +3,23 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-# 1. Настройка логирования
+# 1. Настройка логирования для Railway
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. Данные доступа (берутся из переменных окружения Railway)
+# 2. Переменные окружения
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 LEONARDO_API_KEY = os.getenv("LEONARDO_API_KEY")
 
-# Промпт для создания советской открытки
+# Промпт для трансформации в советском стиле
 TRANSFORM_PROMPT = (
     "Vintage Soviet New Year postcard style, 1970s illustration. "
     "A person in a winter coat and fur hat, snowy background with pines, "
-    "magical glow, gouache painting, high quality artistic detail, nostalgic."
+    "magical glow, gouache painting style, nostalgic atmosphere."
 )
 
 async def get_init_image_id(image_bytes):
-    """Загрузка фото в Leonardo"""
+    """Загрузка изображения на сервер Leonardo"""
     headers = {
         "Authorization": f"Bearer {LEONARDO_API_KEY}",
         "Content-Type": "application/json",
@@ -28,11 +28,11 @@ async def get_init_image_id(image_bytes):
     try:
         payload = {"extension": "jpg"}
         r = requests.post("https://cloud.leonardo.ai/api/rest/v1/init-image", json=payload, headers=headers)
-        if r.status_code != 200: return None
+        if r.status_code != 200:
+            logger.error(f"Upload init error: {r.text}")
+            return None
             
         upload_data = r.json().get('uploadInitImage')
-        if not upload_data: return None
-            
         image_id = upload_data.get('id')
         upload_url = upload_data.get('url')
         fields = json.loads(upload_data.get('fields')) if isinstance(upload_data.get('fields'), str) else upload_data.get('fields')
@@ -41,101 +41,121 @@ async def get_init_image_id(image_bytes):
         response = requests.post(upload_url, data=fields, files=files)
         
         if response.status_code in [200, 204]:
-            logger.info(f"Photo uploaded. ID: {image_id}")
-            await asyncio.sleep(10) # Ожидание индексации
+            logger.info(f"Photo uploaded successfully. ID: {image_id}")
+            await asyncio.sleep(12) # Время на индексацию файла
             return image_id
     except Exception as e:
-        logger.error(f"Upload error: {e}")
+        logger.error(f"Global upload error: {e}")
     return None
 
 async def generate_transformed_image(init_image_id):
-    """Генерация через стабильную модель SD 1.5"""
+    """Генерация изображения через стабильный метод v1"""
     url = "https://cloud.leonardo.ai/api/rest/v1/generations"
     headers = {
         "Authorization": f"Bearer {LEONARDO_API_KEY}",
         "Content-Type": "application/json"
     }
     
+    # Самая легкая конфигурация для бесплатного API
     payload = {
         "prompt": TRANSFORM_PROMPT,
         "width": 768,
         "height": 1024,
         "num_images": 1,
         "init_generation_image_id": init_image_id,
-        "init_strength": 0.45,
-        "modelId": "6bef9f1b-29cb-40c7-b9df-32b51c1f67d3", # Stable Diffusion 1.5
-        "promptMagic": False # Отключаем для стабильности на Free Tier
+        "init_strength": 0.5,
+        "modelId": "6bef9f1b-29cb-40c7-b9df-32b51c1f67d3", # SD 1.5
+        "promptMagic": False,
+        "public": False
     }
     
-    for attempt in range(5):
+    for attempt in range(3):
         try:
             r = requests.post(url, json=payload, headers=headers).json()
             gen_id = (r.get('sdGenerationJob') or r.get('generation_job') or {}).get('generationId')
             
             if not gen_id:
-                if "invalid" in str(r).lower():
-                    await asyncio.sleep(15)
-                    continue
-                return None
+                logger.warning(f"Attempt {attempt+1}: Leonardo busy or ID not ready. Waiting...")
+                await asyncio.sleep(15)
+                continue
 
-            # Опрос статуса
+            # Опрос статуса готовности (до 5 минут)
             for _ in range(60):
                 await asyncio.sleep(5)
-                res = requests.get(f"{url}/{gen_id}", headers=headers).json()
-                data = res.get("generations_by_pk") or res.get("generations", [{}])[0]
+                status_url = f"https://cloud.leonardo.ai/api/rest/v1/generations/{gen_id}"
+                res = requests.get(status_url, headers=headers).json()
                 
-                if data.get("generated_images"):
-                    return data["generated_images"][0]['url']
+                # Проверка разных форматов ответа
+                data = res.get("generations_by_pk") or res.get("generations", [{}])[0]
+                images = data.get("generated_images", [])
+                
+                if images:
+                    return images[0]['url']
+                
                 if data.get("status") == "FAILED":
+                    logger.error("Generation failed on Leonardo side.")
                     return None
             return None
         except Exception as e:
-            logger.error(f"Gen error: {e}")
+            logger.error(f"Generation loop error: {e}")
             break
     return None
 
 def finalize_card(image_bytes):
-    """Добавление рамки и текста"""
+    """Создание финальной открытки с рамкой и текстом"""
     img = Image.open(io.BytesIO(image_bytes))
-    img = ImageOps.expand(img, border=(20, 20, 20, 100), fill='#FDFBF5')
+    # Поляроидная рамка (бежевая)
+    img = ImageOps.expand(img, border=(25, 25, 25, 120), fill='#FDFBF5')
     draw = ImageDraw.Draw(img)
+    
     try:
-        font = ImageFont.truetype("font.ttf", 50)
+        # Убедитесь, что файл font.ttf лежит в корне проекта!
+        font = ImageFont.truetype("font.ttf", 60)
     except:
         font = ImageFont.load_default()
+        
+    w, h = img.size
+    draw.text((w/2, h-60), "С Новым Годом!", font=font, fill="#8B0000", anchor="mm")
     
-    draw.text((img.size[0]/2, img.size[1]-50), "С Новым Годом!", font=font, fill="#8B0000", anchor="mm")
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=95)
     return out.getvalue()
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    m = await update.message.reply_text("❄️ Рисую вашу открытку (около 1 минуты)...")
+    """Обработка фото от пользователя"""
+    msg = await update.message.reply_text("❄️ Начинаю превращение... Это может занять пару минут.")
     try:
-        photo = await update.message.photo[-1].get_file()
-        img_bytes = await photo.download_as_bytearray()
+        photo_file = await update.message.photo[-1].get_file()
+        img_bytes = await photo_file.download_as_bytearray()
         
+        # 1. Загрузка
         init_id = await get_init_image_id(img_bytes)
         if not init_id:
-            return await m.edit_text("❌ Ошибка загрузки фото.")
+            return await msg.edit_text("❌ Ошибка загрузки фото. Попробуйте еще раз.")
 
-        res_url = await generate_transformed_image(init_id)
-        if res_url:
-            card_data = requests.get(res_url).content
-            final_img = finalize_card(card_data)
-            await update.message.reply_photo(final_img, caption="🎄 Готово!")
-            await m.delete()
+        # 2. Генерация
+        await msg.edit_text("🎨 Нейросеть рисует ваш образ...")
+        image_url = await generate_transformed_image(init_id)
+        
+        if image_url:
+            # 3. Финализация
+            await msg.edit_text("✨ Оформляю открытку...")
+            generated_data = requests.get(image_url).content
+            final_card = finalize_card(generated_data)
+            
+            await update.message.reply_photo(final_card, caption="🎄 Ваша советская открытка готова!")
+            await msg.delete()
         else:
-            await m.edit_text("❌ Сервер Leonardo занят. Попробуйте ещё раз через минуту.")
+            await msg.edit_text("❌ Не удалось создать образ. Попробуйте другое фото или подождите минуту.")
+            
     except Exception as e:
-        logger.error(f"Full error: {e}")
-        await m.edit_text("❌ Произошла ошибка.")
+        logger.error(f"Handler error: {e}")
+        await msg.edit_text("❌ Произошла ошибка при обработке.")
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("Пришлите фото!")))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.run_polling(drop_pending_updates=True)
+    """Запуск бота"""
+    if not TELEGRAM_TOKEN or not LEONARDO_API_KEY:
+        print("Ошибка: Переменные окружения не настроены!")
+        return
 
-if __name__ == "__main__":
-    main()
+    app = Application.builder().token(TELEGRAM_TOKEN).
