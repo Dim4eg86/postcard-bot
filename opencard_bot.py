@@ -21,14 +21,15 @@ TRANSFORM_PROMPT = (
 )
 
 async def get_init_image_id(image_bytes):
-    """Загрузка изображения в Leonardo с проверкой типов данных"""
+    """Загрузка изображения в Leonardo (Исправленная версия v1)"""
     headers = {
         "Authorization": f"Bearer {LEONARDO_API_KEY}",
         "Content-Type": "application/json",
         "accept": "application/json"
     }
     try:
-        payload = {"extension": "jpg", "isPublic": True}
+        # УБРАНО isPublic, так как ваш API его не принимает
+        payload = {"extension": "jpg"} 
         r = requests.post("https://cloud.leonardo.ai/api/rest/v1/init-image", json=payload, headers=headers)
         
         if r.status_code != 200:
@@ -42,26 +43,27 @@ async def get_init_image_id(image_bytes):
         image_id = upload_data.get('id')
         upload_url = upload_data.get('url')
         
-        # Безопасный парсинг fields (может быть строкой или словарем)
+        # Безопасный парсинг fields
         raw_fields = upload_data.get('fields')
         fields = json.loads(raw_fields) if isinstance(raw_fields, str) else raw_fields
 
-        # Загрузка в S3
+        # Загрузка в S3 (добавили имя файла и тип для надежности)
         files = {'file': ('image.jpg', image_bytes, 'image/jpeg')}
         response = requests.post(upload_url, data=fields, files=files)
         
         if response.status_code in [200, 204]:
             logger.info(f"Photo uploaded successfully. ID: {image_id}")
-            await asyncio.sleep(10) # Ожидание индексации
+            # Оставляем паузу, чтобы база данных Leonardo обновилась
+            await asyncio.sleep(12) 
             return image_id
         else:
-            logger.error(f"S3 Error: {response.status_code}")
+            logger.error(f"S3 Error: {response.status_code} - {response.text}")
     except Exception as e:
         logger.error(f"Upload global error: {e}")
     return None
 
 async def generate_transformed_image(init_image_id):
-    """Генерация Image-to-Image с циклом попыток"""
+    """Генерация Image-to-Image"""
     url = "https://cloud.leonardo.ai/api/rest/v1/generations"
     headers = {
         "Authorization": f"Bearer {LEONARDO_API_KEY}",
@@ -95,8 +97,8 @@ async def generate_transformed_image(init_image_id):
                 return None
 
             if "invalid" in str(r).lower():
-                wait = (attempt + 1) * 12
-                logger.warning(f"ID not ready, waiting {wait}s...")
+                wait = (attempt + 1) * 10
+                logger.warning(f"ID not ready (Attempt {attempt+1}), waiting {wait}s...")
                 await asyncio.sleep(wait)
                 continue
             else:
@@ -129,7 +131,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         init_id = await get_init_image_id(img_bytes)
         if not init_id:
-            return await m.edit_text("❌ Ошибка загрузки в нейросеть.")
+            return await m.edit_text("❌ Ошибка загрузки в нейросеть (Leonardo API v1).")
 
         await m.edit_text("🎨 Рисую ваш ретро-образ...")
         res_url = await generate_transformed_image(init_id)
