@@ -24,27 +24,24 @@ async def get_init_image_id(image_bytes):
         "accept": "application/json"
     }
     try:
-        # Добавляем расширение явно
-        payload = {"extension": "jpg"}
+        # ДОБАВЛЕНО: isPublic: True — это часто решает проблему доступности ID для генератора
+        payload = {"extension": "jpg", "isPublic": True}
         r = requests.post("https://cloud.leonardo.ai/api/rest/v1/init-image", json=payload, headers=headers).json()
         
         upload_data = r.get('uploadInitImage')
-        if not upload_data:
-            logger.error(f"Init Image Error: {r}")
-            return None
+        if not upload_data: return None
             
         image_id = upload_data.get('id')
         upload_url = upload_data.get('url')
         fields = json.loads(upload_data.get('fields'))
 
-        # Загрузка бинарного файла
         files = {'file': image_bytes}
         response = requests.post(upload_url, data=fields, files=files)
         
         if response.status_code in [200, 204]:
-            logger.info(f"Photo uploaded to S3. ID: {image_id}")
-            # Даем базовую паузу 7 секунд (безопасный порог для Leonardo)
-            await asyncio.sleep(7)
+            logger.info(f"Photo uploaded. ID: {image_id}")
+            # УВЕЛИЧЕННАЯ ПАУЗА: 10 секунд перед первой попыткой
+            await asyncio.sleep(10)
             return image_id
     except Exception as e:
         logger.error(f"Upload Exception: {e}")
@@ -67,15 +64,15 @@ async def generate_transformed_image(init_image_id):
         "promptMagic": True
     }
     
-    # Цикл попыток генерации (Retry Loop)
-    for attempt in range(3):
+    # 5 попыток с нарастающим ожиданием (до 1.5 минут суммарно)
+    for attempt in range(5):
         try:
             r = requests.post(url, json=payload, headers=headers).json()
-            gen_data = r.get('sdGenerationJob') or r.get('generation_job')
             
+            # Проверяем, запустилась ли генерация
+            gen_data = r.get('sdGenerationJob') or r.get('generation_job')
             if gen_data:
                 gen_id = gen_data.get('generationId')
-                # Ожидание результата
                 for _ in range(60):
                     await asyncio.sleep(4)
                     status_res = requests.get(f"{url}/{gen_id}", headers=headers).json()
@@ -85,14 +82,15 @@ async def generate_transformed_image(init_image_id):
                     if data.get("status") == "FAILED": return None
                 return None
 
-            # Если получили ошибку про Invalid ID - ждем еще и повторяем
-            if "invalid init" in str(r).lower():
-                wait_time = (attempt + 1) * 7
-                logger.warning(f"Attempt {attempt+1}: Image ID not ready. Waiting {wait_time}s...")
+            # Если ошибка в ID — ждем дольше
+            error_msg = str(r).lower()
+            if "invalid" in error_msg or "id" in error_msg:
+                wait_time = (attempt + 1) * 12
+                logger.warning(f"ID not ready (Attempt {attempt+1}). Waiting {wait_time}s...")
                 await asyncio.sleep(wait_time)
                 continue
             else:
-                logger.error(f"Generation Start Error: {r}")
+                logger.error(f"Generation Error: {r}")
                 return None
                 
         except Exception as e:
@@ -106,31 +104,27 @@ def finalize_card(image_bytes):
     draw = ImageDraw.Draw(img)
     try: font = ImageFont.truetype("font.ttf", 55)
     except: font = ImageFont.load_default()
-    w, h = img.size
-    draw.text((w/2, h-55), "С Новым Годом!", font=font, fill="#8B0000", anchor="mm")
+    draw.text((img.size[0]/2, img.size[1]-55), "С Новым Годом!", font=font, fill="#8B0000", anchor="mm")
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=95)
     return out.getvalue()
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    m = await update.message.reply_text("🧣 Магия начинается...")
+    m = await update.message.reply_text("❄️ Начинаю превращение (это может занять до 2 минут)...")
     try:
         photo_file = await update.message.photo[-1].get_file()
         img_bytes = await photo_file.download_as_bytearray()
         
         init_id = await get_init_image_id(img_bytes)
-        if not init_id:
-            return await m.edit_text("❌ Ошибка загрузки.")
+        if not init_id: return await m.edit_text("❌ Ошибка загрузки.")
 
-        await m.edit_text("🎨 Нейросеть готовит ваш образ (попытка может занять время)...")
         res_url = await generate_transformed_image(init_id)
-        
         if res_url:
             final_bytes = finalize_card(requests.get(res_url).content)
             await update.message.reply_photo(final_bytes, caption="🎄 Ретро-открытка готова!")
             await m.delete()
         else:
-            await m.edit_text("❌ Нейросеть не смогла обработать ID изображения. Попробуйте еще раз.")
+            await m.edit_text("❌ Leonardo не принял ID. Попробуйте еще раз с другим фото.")
 
     except Exception as e:
         logger.error(f"Handler error: {e}")
