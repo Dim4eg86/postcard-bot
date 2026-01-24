@@ -321,16 +321,10 @@ async def generate_postcard_image_to_image(user_photo_path, theme, style, scene,
                 "height": 1216 if orientation == "vertical" else 832,
                 "num_images": 1,
                 "init_image_id": init_image_id,
-                "init_strength": 0.55,  # Увеличено для сохранения композиции
+                "init_strength": 0.65,  # Высокое значение для сохранения композиции
                 "presetStyle": "ILLUSTRATION",
                 "alchemy": True,
-                "photoReal": False,
-                "controlnets": [{
-                    "initImageId": init_image_id,
-                    "initImageType": "UPLOADED",
-                    "preprocessorId": 67,  # Depth ControlNet
-                    "strengthType": "High"
-                }]
+                "photoReal": False
             },
             timeout=60
         )
