@@ -299,7 +299,8 @@ async def generate_postcard_image_to_image(user_photo_path, theme, style, scene,
         negative_prompt = (
             "ugly, distorted face, bad anatomy, deformed, blurry, "
             "low quality, jpeg artifacts, watermark, text, signature, "
-            "modern objects, smartphones, cars"
+            "modern objects, smartphones, cars, changing number of people, "
+            "removing people, adding people"
         )
         
         # Запускаем Image-to-Image генерацию
@@ -320,10 +321,17 @@ async def generate_postcard_image_to_image(user_photo_path, theme, style, scene,
                 "height": 1216 if orientation == "vertical" else 832,
                 "num_images": 1,
                 "init_image_id": init_image_id,
-                "init_strength": 0.35,  # 0.3-0.4 хорошо сохраняет лица
+                "init_strength": 0.55,  # Увеличено для сохранения композиции
                 "presetStyle": "ILLUSTRATION",
                 "alchemy": True,
-                "photoReal": False
+                "photoReal": False,
+                "controlnets": [{
+                    "initImageId": init_image_id,
+                    "initImageType": "UPLOADED",
+                    "preprocessorId": 67,  # Depth ControlNet
+                    "strengthType": "High",
+                    "weight": 0.8
+                }]
             },
             timeout=60
         )
@@ -438,11 +446,19 @@ Theme: {theme_desc}
 
 Composition: {composition}.
 
-Transform the photo into this vintage postcard style while preserving the person's facial features and expression. Keep faces recognizable.
+CRITICAL INSTRUCTIONS:
+- Keep the EXACT SAME number of people from the original photo
+- Keep the EXACT SAME positions and poses
+- Keep all faces recognizable and preserve facial features
+- Transform only the style, clothing, and background
+- DO NOT add or remove people
+- DO NOT change the composition layout
+
+Transform the photo into this vintage postcard style while strictly maintaining the number of people, their positions, and facial identities.
 
 Style requirements: painted illustration aesthetic, vintage postcard look, warm nostalgic atmosphere, ornate decorative border, aged vintage appearance.
 
-IMPORTANT: Hand-painted illustration style, artistic and painterly, NOT a photograph. Preserve facial identity and features."""
+IMPORTANT: Hand-painted illustration style, artistic and painterly, NOT a photograph. Preserve exact number of people and all facial identities."""
 
     return prompt
 
