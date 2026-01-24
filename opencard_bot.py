@@ -329,8 +329,7 @@ async def generate_postcard_image_to_image(user_photo_path, theme, style, scene,
                     "initImageId": init_image_id,
                     "initImageType": "UPLOADED",
                     "preprocessorId": 67,  # Depth ControlNet
-                    "strengthType": "High",
-                    "weight": 0.8
+                    "strengthType": "High"
                 }]
             },
             timeout=60
