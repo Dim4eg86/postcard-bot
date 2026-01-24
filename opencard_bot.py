@@ -847,17 +847,6 @@ async def generate_postcard(photo_path, theme, style, scene, orientation="vertic
         import traceback
         logger.error(traceback.format_exc())
         return None
-            os.remove(final_path)
-        except:
-            pass
-        
-        return jpeg_path
-        
-    except Exception as e:
-        logger.error(f"[PIPELINE] Error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
 
 # =============================================================================
 # TELEGRAM BOT HANDLERS
